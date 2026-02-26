@@ -1,0 +1,78 @@
+角色设定： 你是一位全栈架构师，正在协助我将一个排班系统的前端 Mock 数据替换为真实的后端 API 调用，并将数据存储迁移到 MySQL 数据库。
+
+当前状态：
+
+前端：React + Ant Design，目前使用本地 JSON (mockData) 渲染界面。
+
+后端：FastAPI (Python)，目前尚未与数据库完全打通。
+
+任务目标： 请完成以下三项核心工作：
+
+任务 1：MySQL 数据库设计 (SQLAlchemy Models)
+请废弃原有的内存存储/SQLite，设计一套规范的 MySQL 表结构，把建表语句放在database文件夹。使用 SQLAlchemy 或 Tortoise-ORM 定义模型：
+
+employees 表：
+
+id (Int, PK)
+
+name (String, 姓名)
+
+is_night_leader (Boolean, 是否夜班长/前6列)
+
+sequence_order (Int, 用于前端列排序)
+
+shifts 表 (排班记录)：
+
+id (PK)
+
+date (Date, 日期)
+
+group_id (String, 'A'/'B'/'C')
+
+employee_id (FK -> employees.id)
+
+shift_type (String, '白班'/'大夜'...)
+
+seat_type (String, '主任席'/'普通席'...)
+
+avoidance_rules 表 (避让规则)：
+
+id (PK)
+
+member_ids_json (JSON, 存储互斥成员的 ID 列表，如 [1, 2])
+
+system_config 表 (锚点配置)：
+
+存储 anchor_date (锚点日期) 和 anchor_group (锚点组别)，用于后端计算“做一休二”的工作日。
+
+任务 2：后端 API 实现 (FastAPI)
+请实现以下 RESTful 接口，并确保支持 CORS 跨域：
+
+GET /api/init-data: 接收 month 和 group。
+
+逻辑： 读取 system_config 计算该月工作日 -> 查询 shifts 表填充数据 -> 若无数据则返回空结构 -> 同时返回 employees 和 rules。
+
+POST /api/schedule/auto-generate: 接收日期范围。
+
+逻辑： 调用 OR-Tools 算法计算排班 -> 不存库，直接返回预览数据给前端。
+
+POST /api/schedule/save: 接收前端修改后的排班 JSON。
+
+逻辑： 开启事务 -> 清除该日期范围旧数据 -> 批量插入新数据 -> 提交。
+
+GET /api/export: 生成 Excel 文件流。
+
+任务 3：前端 API 对接 (React + Axios)
+包括：日期获取、名字获取、如果之前没有排过班，排班页面应该是空的、智能一键排班、导出Excel、保存排班等都需要对接后端接口。你根据前端页面代码生成后端页面接口，缺少的api接口你新增一下。
+
+封装 Axios： 创建 src/utils/request.ts，统一处理 BaseURL 和错误拦截。
+
+替换 Mock：
+
+在 useEffect 中调用 /api/init-data 替换原本的 const [data] = useState(mockData)。
+
+将“保存”按钮的 onClick 事件绑定到 /api/schedule/save。
+
+将“一键排班”按钮绑定到 /api/schedule/auto-generate。
+
+状态同步： 确保前端拖拽修改 state 后，数据结构能适配后端 API 的要求的 Payload 格式。

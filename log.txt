@@ -1,0 +1,18 @@
+PS D:\Project_Code\AIScheduling\backend> uvicorn app.main:app --reload
+INFO:     Will watch for changes in these directories: ['D:\\Project_Code\\AIScheduling\\backend']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [11568] using WatchFiles
+INFO:     Started server process [2752]
+INFO:     Waiting for application startup.
+Database initialized successfully
+INFO:     Application startup complete.
+INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60277 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51174 - "POST /api/schedule/auto-generate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56332 - "POST /api/schedule/auto-generate HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54783 - "GET /api/init-data?month=2026-01&group_id=B HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54783 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK

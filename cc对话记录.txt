@@ -1,0 +1,53 @@
+ 项目改造已完成。以下是完成的工作总结：
+
+  任务完成总结
+
+  任务 1：MySQL 数据库设计
+
+  创建了以下文件：
+  - backend/database/__init__.py - 模块初始化
+  - backend/database/config.py - 数据库连接配置
+  - backend/database/models.py - SQLAlchemy 模型（employees, shifts, avoidance_rules, system_config 表）
+  - backend/database/init_db.sql - 建表SQL脚本及初始数据
+
+  任务 2：后端 API 实现
+
+  更新/创建了以下文件：
+  - backend/app/services/crud.py - 数据库 CRUD 操作服务
+  - backend/app/models/schemas.py - 添加了新的 Pydantic 模型
+  - backend/app/routers/schedule.py - 实现新的 API 端点：
+    - GET /api/init-data - 获取初始化数据
+    - POST /api/schedule/auto-generate - 智能排班（预览）
+    - POST /api/schedule/save - 保存排班
+    - GET /api/export - 导出 Excel
+    - 员工 CRUD 接口
+  - backend/app/main.py - 添加数据库初始化和生命周期管理
+  - backend/requirements.txt - 添加 SQLAlchemy、PyMySQL 依赖
+
+  任务 3：前端 API 对接
+
+  创建/更新了以下文件：
+  - web/utils/request.ts - Axios 封装，统一处理 BaseURL 和错误拦截
+  - web/api/index.ts - API 服务层，封装所有后端调用
+  - web/types.ts - 添加新的类型定义
+  - web/App.tsx - 对接后端 API，支持本地/后端双模式
+  - web/components/MatrixHeader.tsx - 添加保存、导出按钮绑定
+  - web/package.json - 添加 axios 依赖
+  - web/.env.local - 添加 API URL 配置
+
+  使用说明
+
+  1. 初始化数据库：
+  mysql -u root -p < backend/database/init_db.sql
+
+  2. 启动后端：
+  cd backend
+  pip install -r requirements.txt
+  uvicorn app.main:app --reload
+
+  3. 启动前端：
+  cd web
+  npm install
+  npm run dev
+
+  前端会自动检测后端服务是否可用，如不可用会切换到本地模式运行。

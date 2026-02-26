@@ -1,0 +1,16 @@
+.# Local AI / editor config
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+
+# Environment / secrets
+.env
+.env.*
+backend/.env
+
+# Node / frontend
+node_modules/
+web/node_modules/
+
