@@ -857,6 +857,8 @@ const App: React.FC = () => {
       nightTypes.forEach(t => {
         // 前6人是主任资质
         const chiefCandidates = schedule.records.slice(0, 6).filter(r => r.type === t);
+        // 睡觉班和小夜班允许最多2个主任席，大夜班只允许1个
+        const maxChiefs = (t === ShiftType.LATE_NIGHT) ? 1 : 2;
         if (chiefCandidates.length === 0) {
           results.push({
             type: 'CHIEF_MISSING',
@@ -865,13 +867,13 @@ const App: React.FC = () => {
             shiftType: t,
             message: `${schedule.date.slice(-2)}日 ${getShiftName(t)} 缺少主任席`
           });
-        } else if (chiefCandidates.length > 1) {
+        } else if (chiefCandidates.length > maxChiefs) {
           results.push({
             type: 'CHIEF_DUPLICATE',
             employeeIds: chiefCandidates.map(c => c.employeeId),
             date: schedule.date,
             shiftType: t,
-            message: `${schedule.date.slice(-2)}日 ${getShiftName(t)} 存在多个主任席`
+            message: `${schedule.date.slice(-2)}日 ${getShiftName(t)} 主任席超过${maxChiefs}个（当前${chiefCandidates.length}个）`
           });
         }
       });

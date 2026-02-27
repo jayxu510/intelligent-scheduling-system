@@ -41,7 +41,8 @@ Key Features:
 
 Constraint Priority (by weight):
 ---------------------------------
-- Consecutive shifts: 1000 (highest priority to avoid)
+- Day shift max gap: 1500 (enforce 1-3 day interval)
+- Consecutive shifts: 1000 (avoid same-type consecutive)
 - Interval violations: 500 (important but flexible)
 - Fairness spread: 200 (balance across employees)
 - Random perturbation: 0-3 (tie-breaking for variety)
@@ -133,6 +134,10 @@ class SchedulingSolver:
         self.last_late_night: dict[str, str] = {}
         # 构建历史班次统计：每个员工上个月各班次的数量（用于跨月公平性）
         self.prev_shift_counts: dict[str, dict[ShiftType, int]] = defaultdict(lambda: defaultdict(int))
+        # 构建第一个员工的上月末尾班次序列（用于延续"1白班+2睡觉班"规律）
+        self.first_emp_prev_shifts: list[ShiftType] = []
+        # 构建每个员工上月最后一次白班的日期（用于跨月白班间隔约束）
+        self.last_day_shift: dict[str, str] = {}
 
         if self.previous_schedules:
             sorted_prev = sorted(self.previous_schedules, key=lambda s: s.date)
@@ -141,9 +146,21 @@ class SchedulingSolver:
                     # 记录最后一次大夜班日期
                     if record.shift_type == ShiftType.LATE_NIGHT:
                         self.last_late_night[record.employee_id] = schedule.date
+                    # 记录最后一次白班日期
+                    if record.shift_type == ShiftType.DAY:
+                        self.last_day_shift[record.employee_id] = schedule.date
                     # 统计各班次数量（排除NONE和VACATION）
                     if record.shift_type not in [ShiftType.NONE, ShiftType.VACATION]:
                         self.prev_shift_counts[record.employee_id][record.shift_type] += 1
+
+            # 收集第一个员工在上月的班次序列（按日期排序）
+            if sorted_prev and len(self.emp_ids) > 0:
+                first_emp_id = self.emp_ids[0]
+                for schedule in sorted_prev:
+                    for record in schedule.records:
+                        if record.employee_id == first_emp_id:
+                            self.first_emp_prev_shifts.append(record.shift_type)
+                            break
 
     def solve(self) -> tuple[list[DailySchedule], dict]:
         """Solve the scheduling problem.
@@ -196,14 +213,20 @@ class SchedulingSolver:
             for day in self.work_days:
                 model.Add(sum(c[emp_id, day, shift] for shift in chief_shifts) <= 1)
 
-        # Constraint 6: Exactly 1 leader per night shift type per day
-        # This prevents multiple leaders from being in the same night shift,
-        # which the frontend detects as "multiple chiefs" (主任席冲突).
-        # With 6 leaders and 3 night shifts (each needing 1 leader),
-        # the remaining 3 leaders are assigned to DAY shift.
+        # Constraint 6: Leader limits per night shift type per day
+        # - SLEEP and MINI_NIGHT: at least 1, at most 2 leaders
+        # - LATE_NIGHT: exactly 1 leader
+        # Constraint 3 already ensures exactly 1 chief per night shift.
+        # Allowing up to 2 leaders on SLEEP/MINI_NIGHT gives the solver flexibility
+        # to avoid consecutive DAY shifts for leaders.
         for day in self.work_days:
             for shift in chief_shifts:
-                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) == 1)
+                leader_sum = sum(x[emp_id, day, shift] for emp_id in self.leader_ids)
+                model.Add(leader_sum >= 1)
+                if shift == ShiftType.LATE_NIGHT:
+                    model.Add(leader_sum <= 1)
+                else:
+                    model.Add(leader_sum <= 2)
 
         # Constraint 7: Avoidance group members cannot be in the same shift (硬约束)
         # This guarantees zero avoidance conflicts in the generated schedule.
@@ -221,10 +244,66 @@ class SchedulingSolver:
                     model.Add(x[first_emp_id, day, shift] == 0)
 
         # Constraint 7.6: 第一个员工按"1个白班 + 2个睡觉班"循环（硬约束）
+        # 延续上个月的规律：从上月末尾班次序列反推循环位置
         if len(self.emp_ids) > 0:
             first_emp_id = self.emp_ids[0]
+
+            # 确定本月第一天应该在循环中的位置
+            # 循环定义: pos 0 = 白班, pos 1 = 睡觉班(第1个), pos 2 = 睡觉班(第2个)
+            start_offset = 0
+
+            if self.first_emp_prev_shifts:
+                # 从上月末尾往回扫描，找到最后一个循环位置
+                # 只关心 DAY 和 SLEEP，忽略其他班次
+                prev = self.first_emp_prev_shifts
+                # 从最后一天往回看，确定在循环中的位置
+                # 方法：从末尾往回找最近的白班，然后数它后面有几个睡觉班
+                last_day_idx = -1
+                for i in range(len(prev) - 1, -1, -1):
+                    if prev[i] == ShiftType.DAY:
+                        last_day_idx = i
+                        break
+
+                if last_day_idx >= 0:
+                    # 找到了最后一个白班，数它后面有几个睡觉班
+                    sleep_count_after = 0
+                    for i in range(last_day_idx + 1, len(prev)):
+                        if prev[i] == ShiftType.SLEEP:
+                            sleep_count_after += 1
+                        else:
+                            break  # 遇到非睡觉班就停止
+
+                    # last_day_idx 处是白班(pos=0)，之后每个睡觉班推进一个位置
+                    # 上月结束时的位置 = sleep_count_after (0=刚上完白班, 1=上了1个睡觉, 2=上了2个睡觉)
+                    # 本月起始位置 = (sleep_count_after + 1) % 3
+                    # 因为上月最后的位置是 sleep_count_after，下一天应该是 sleep_count_after+1
+                    start_offset = (sleep_count_after + 1) % 3
+                else:
+                    # 上月没有白班记录（异常情况），从末尾连续睡觉班数量推算
+                    trailing_sleeps = 0
+                    for i in range(len(prev) - 1, -1, -1):
+                        if prev[i] == ShiftType.SLEEP:
+                            trailing_sleeps += 1
+                        else:
+                            break
+                    # 假设循环中 trailing_sleeps 个睡觉班后应该是白班
+                    if trailing_sleeps >= 2:
+                        start_offset = 0  # 该上白班了
+                    elif trailing_sleeps == 1:
+                        start_offset = 2  # 还差一个睡觉班
+                    else:
+                        start_offset = 0  # 默认从白班开始
+
+            # 应用循环规律，但要检查是否与锁定单元格冲突
             for i, day in enumerate(self.work_days):
-                if i % 3 == 0:
+                # 检查该单元格是否被锁定
+                cell_key = (first_emp_id, day)
+                if cell_key in self.locked_assignments:
+                    # 如果被锁定，使用锁定的班次（锁定约束会在后面处理）
+                    continue
+
+                cycle_pos = (i + start_offset) % 3
+                if cycle_pos == 0:
                     # 白班
                     model.Add(x[first_emp_id, day, ShiftType.DAY] == 1)
                 else:
@@ -254,13 +333,16 @@ class SchedulingSolver:
                 model.Add(sum(four_day_nights) <= 3)
 
         # Constraint 7.8: 班次间隔约束
-        # 普通席位大夜班：最少间隔3个班，最多间隔6个班
-        # 主任席大夜班：最少间隔3个班，最多间隔5个班
-        # 主任席白班：最少间隔1个班，最多间隔3个班
+        # 大夜班：最少间隔3个工作日
+        # 白班：间隔1至3个工作日（min=1, max=3）
+        #   - 普通员工：min gap 硬约束, max gap 软约束(高权重)
+        #   - 所有人员：min gap 硬约束, max gap 软约束(高权重)
+        #   - 实在无解时允许连续睡觉班来妥协
         leader_ids_set = set(self.leader_ids) if hasattr(self, 'leader_ids') else set(self.emp_ids[:6])
         from datetime import datetime
 
         max_gap_penalties = []
+        day_max_gap_penalties = []  # 白班最大间隔违规惩罚
 
         for emp_id in self.emp_ids:
             is_leader = emp_id in leader_ids_set
@@ -290,100 +372,55 @@ class SchedulingSolver:
                             x[emp_id, self.work_days[i + j], ShiftType.LATE_NIGHT] <= 1
                         )
 
-            # 本月内大夜班最大间隔（软约束）
-            # 如果第i天上大夜班，接下来 max_gap+1 天内应该再有一个大夜班
-            for i in range(len(self.work_days)):
-                end = min(i + late_max_gap + 2, len(self.work_days))
-                if end - i < 2:
-                    continue
-                # 窗口内大夜班数量：如果第i天是大夜班，窗口内至少还要有1个
-                window_days = [self.work_days[j] for j in range(i + 1, end)]
-                if not window_days:
-                    continue
-                # 如果 x[i, LATE_NIGHT] == 1 且 sum(x[i+1..end, LATE_NIGHT]) == 0，则惩罚
-                no_late_in_window = model.NewBoolVar(f"no_late_window_{emp_id}_{i}")
-                model.Add(
-                    sum(x[emp_id, d, ShiftType.LATE_NIGHT] for d in window_days) == 0
-                ).OnlyEnforceIf(no_late_in_window)
-                model.Add(
-                    sum(x[emp_id, d, ShiftType.LATE_NIGHT] for d in window_days) >= 1
-                ).OnlyEnforceIf(no_late_in_window.Not())
-
-                gap_violation = model.NewBoolVar(f"late_gap_viol_{emp_id}_{i}")
-                # gap_violation == 1 当且仅当 第i天是大夜班 且 窗口内没有大夜班
-                model.AddBoolAnd([
-                    x[emp_id, self.work_days[i], ShiftType.LATE_NIGHT],
-                    no_late_in_window
-                ]).OnlyEnforceIf(gap_violation)
-                model.AddBoolOr([
-                    x[emp_id, self.work_days[i], ShiftType.LATE_NIGHT].Not(),
-                    no_late_in_window.Not()
-                ]).OnlyEnforceIf(gap_violation.Not())
-
-                max_gap_penalties.append(gap_violation)
-
             # --- 白班间隔（除第一人外所有人员） ---
             if emp_id != self.emp_ids[0]:  # 第一人有固定规则，排除
-                day_min_gap = 1  # 最少间隔1个班（尽量不连续白班）
-                day_max_gap = 3  # 最多间隔3个班
+                day_min_gap = 1   # 最少间隔1个工作日
+                day_max_gap = 3   # 最多间隔3个工作日
 
-                is_staff = emp_id not in leader_ids_set
-
-                if is_staff:
-                    # 普通员工白班最小间隔（硬约束）
-                    # 11人分3个白班位，每人约8个白班/月，完全可行
-                    for i in range(len(self.work_days)):
-                        for j in range(1, day_min_gap + 1):
-                            if i + j < len(self.work_days):
-                                model.Add(
-                                    x[emp_id, self.work_days[i], ShiftType.DAY] +
-                                    x[emp_id, self.work_days[i + j], ShiftType.DAY] <= 1
-                                )
-                else:
-                    # 主任员工白班最小间隔（软约束）
-                    # 5人分3个白班位，每人约18个白班/月，无法完全避免连续
-                    for i in range(len(self.work_days)):
-                        for j in range(1, day_min_gap + 1):
-                            if i + j < len(self.work_days):
-                                consec_day = model.NewBoolVar(f"consec_day_{emp_id}_{i}_{j}")
-                                model.Add(
-                                    x[emp_id, self.work_days[i], ShiftType.DAY] +
-                                    x[emp_id, self.work_days[i + j], ShiftType.DAY] >= 2
-                                ).OnlyEnforceIf(consec_day)
-                                model.Add(
-                                    x[emp_id, self.work_days[i], ShiftType.DAY] +
-                                    x[emp_id, self.work_days[i + j], ShiftType.DAY] <= 1
-                                ).OnlyEnforceIf(consec_day.Not())
-                                max_gap_penalties.append(consec_day)
-
-                # 白班最大间隔（软约束）
+                # === 白班最小间隔 ===
+                # 所有人员（主任和普通员工）白班最小间隔均为硬约束
+                # 放宽 Constraint 6 后，主任可以被分配到夜班普通席位，
+                # 求解器有足够空间避免连续白班
                 for i in range(len(self.work_days)):
-                    end = min(i + day_max_gap + 2, len(self.work_days))
-                    if end - i < 2:
+                    if i + 1 < len(self.work_days):
+                        model.Add(
+                            x[emp_id, self.work_days[i], ShiftType.DAY] +
+                            x[emp_id, self.work_days[i + 1], ShiftType.DAY] <= 1
+                        )
+
+                # === 白班最大间隔（软约束，高权重） ===
+                # 规则：任意连续 (max_gap + 2) = 5 个工作日内，必须至少有1个白班
+                # 这保证了两个白班之间最多间隔 max_gap 个工作日
+                window_size = day_max_gap + 2  # = 5
+
+                # 跨月处理：考虑上个月最后一次白班到本月初的间距
+                cross_month_covered = 0  # 上月最后白班"覆盖"了本月前几个工作日
+                if emp_id in self.last_day_shift:
+                    last_day_date = self.last_day_shift[emp_id]
+                    last_day_dt = datetime.strptime(last_day_date, "%Y-%m-%d")
+                    if self.work_days:
+                        first_work_dt = datetime.strptime(self.work_days[0], "%Y-%m-%d")
+                        # 计算上月最后白班到本月第一个工作日之间的工作日数
+                        # 工作日每3天一次，所以间隔的工作日数 ≈ calendar_days / 3
+                        calendar_gap = (first_work_dt - last_day_dt).days
+                        work_day_gap = max(0, (calendar_gap + 2) // 3)  # 向上取整
+                        # 如果间距还在 max_gap 范围内，前几个窗口不需要额外约束
+                        cross_month_covered = max(0, window_size - 1 - work_day_gap)
+
+                # 对本月内的滑动窗口施加约束
+                for i in range(len(self.work_days) - window_size + 1):
+                    if i < cross_month_covered:
+                        # 这个窗口被上月的白班覆盖，跳过
                         continue
-                    window_days = [self.work_days[j] for j in range(i + 1, end)]
-                    if not window_days:
-                        continue
 
-                    no_day_in_window = model.NewBoolVar(f"no_day_window_{emp_id}_{i}")
-                    model.Add(
-                        sum(x[emp_id, d, ShiftType.DAY] for d in window_days) == 0
-                    ).OnlyEnforceIf(no_day_in_window)
-                    model.Add(
-                        sum(x[emp_id, d, ShiftType.DAY] for d in window_days) >= 1
-                    ).OnlyEnforceIf(no_day_in_window.Not())
+                    window_days = self.work_days[i:i + window_size]
+                    day_sum = sum(x[emp_id, d, ShiftType.DAY] for d in window_days)
 
-                    day_gap_violation = model.NewBoolVar(f"day_gap_viol_{emp_id}_{i}")
-                    model.AddBoolAnd([
-                        x[emp_id, self.work_days[i], ShiftType.DAY],
-                        no_day_in_window
-                    ]).OnlyEnforceIf(day_gap_violation)
-                    model.AddBoolOr([
-                        x[emp_id, self.work_days[i], ShiftType.DAY].Not(),
-                        no_day_in_window.Not()
-                    ]).OnlyEnforceIf(day_gap_violation.Not())
-
-                    max_gap_penalties.append(day_gap_violation)
+                    # 软约束：窗口内至少1个白班，违反则惩罚
+                    has_day_in_window = model.NewBoolVar(f"day_gap_{emp_id}_{i}")
+                    model.Add(day_sum >= 1).OnlyEnforceIf(has_day_in_window)
+                    model.Add(day_sum == 0).OnlyEnforceIf(has_day_in_window.Not())
+                    day_max_gap_penalties.append(has_day_in_window.Not())
 
         # Constraint 8: 尽量避免所有班次连续（软约束）
         # 对每个员工、每对相邻工作日、每种班次类型：
@@ -471,10 +508,10 @@ class SchedulingSolver:
                 deviations.append(spread)
 
         # Combined objective:
-        #   连续惩罚 1000 >> 间隔惩罚 500 >> 公平性 200 >> 随机扰动 0-3
-        #   公平性权重提高到200，确保班次分配均匀
+        #   白班最大间隔惩罚 1500 >> 连续惩罚 1000 >> 间隔惩罚 500 >> 公平性 200 >> 随机扰动 0-3
         import random
         consecutive_weight = 1000
+        day_max_gap_weight = 1500  # 白班最大间隔违规权重
         variance_weight = 200
 
         # 为每个员工每天的班次分配添加微小的随机偏好
@@ -487,7 +524,8 @@ class SchedulingSolver:
                         random_terms.append(coeff * x[emp_id, day, shift])
 
         model.Minimize(
-            consecutive_weight * sum(consecutive_penalties)
+            day_max_gap_weight * sum(day_max_gap_penalties)  # 白班最大间隔
+            + consecutive_weight * sum(consecutive_penalties)
             + 500 * sum(max_gap_penalties)
             + variance_weight * sum(deviations)
             + sum(random_terms)
@@ -495,7 +533,7 @@ class SchedulingSolver:
 
         # Solve
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 30.0
+        solver.parameters.max_time_in_seconds = 60.0  # 增加到60秒
         # 每次求解使用不同的随机种子，生成不同的排班方案
         solver.parameters.random_seed = random.randint(0, 2**31 - 1)
         status = solver.Solve(model)

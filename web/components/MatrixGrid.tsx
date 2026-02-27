@@ -437,7 +437,7 @@ const ShiftCell: React.FC<{
     setCustomText('');
   };
 
-  const hasError = isChiefMissing && [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT].includes(record.type);
+  const hasError = false; // 冲突统一在右下角冲突详情中显示，单元格内不再标记
 
   return (
     <div
@@ -475,8 +475,6 @@ const ShiftCell: React.FC<{
       }}
       className={`h-14 border-r border-b border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center transition-all cursor-pointer select-none relative group
         ${isOver ? 'bg-primary/20 scale-95' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}
-        ${hasError ? 'bg-red-50 dark:bg-red-900/10 ring-2 ring-inset ring-red-500/50' : ''}
-        ${isIndivConflict && !hasError ? 'bg-orange-50 dark:bg-orange-900/10' : ''}
         ${isChiefCandidate ? 'bg-blue-50/30 dark:bg-blue-900/10 border-l-2 border-l-blue-300 dark:border-l-blue-700' : ''}
         ${isLocked ? 'ring-2 ring-inset ring-green-500/50' : ''}
       `}
@@ -513,9 +511,6 @@ const ShiftCell: React.FC<{
         </span>
       )}
 
-      {hasError && (
-        <span className="material-symbols-outlined absolute top-1 right-1 text-red-500 text-[14px] animate-pulse">priority_high</span>
-      )}
       {record.type === ShiftType.NONE && (
         <div className="absolute inset-0 flex items-center justify-center opacity-10">
           <div className="w-6 h-3 rounded-full border border-slate-400 dark:border-slate-500"></div>

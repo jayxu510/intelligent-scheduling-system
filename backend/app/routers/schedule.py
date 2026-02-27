@@ -317,7 +317,7 @@ async def auto_generate_schedule(request: AutoGenerateRequest, db: Session = Dep
                         # 忽略无效的班次类型
                         pass
 
-        # 获取上个月的最后几天排班数据（用于考虑跨月大夜班间隔）
+        # 获取上个月的排班数据（用于跨月约束：大夜班间隔、白班间隔、第一人循环、公平性）
         from datetime import datetime, timedelta
         from app.services.crud import get_shifts_by_month
 
@@ -329,25 +329,24 @@ async def auto_generate_schedule(request: AutoGenerateRequest, db: Session = Dep
             prev_year = last_day_prev_month.year
             prev_month = last_day_prev_month.month
 
-            # 获取上个月的排班记录
+            # 获取上个月的全部排班记录（需要完整数据用于第一人循环和公平性计算）
             prev_shifts = get_shifts_by_month(db, prev_year, prev_month, request.group_id)
 
-            # 按日期分组，只取最后10天
+            # 按日期分组
             from collections import defaultdict
             records_by_date = defaultdict(list)
             for shift in prev_shifts:
-                records_by_date[shift.shift_date.strftime("%Y-%m-%d")].append(shift)
+                records_by_date[shift.date.strftime("%Y-%m-%d")].append(shift)
 
             sorted_dates = sorted(records_by_date.keys())
-            last_10_dates = sorted_dates[-10:] if len(sorted_dates) > 10 else sorted_dates
 
-            # 转换为 DailySchedule 格式
+            # 转换为 DailySchedule 格式（全部日期，不再截断）
             from app.models.schemas import DailySchedule, ShiftRecord
-            for date_str in last_10_dates:
+            for date_str in sorted_dates:
                 day_shifts = records_by_date[date_str]
                 schedule = DailySchedule(
                     date=date_str,
-                    day_of_week="",  # 不需要星期几
+                    day_of_week="",
                     records=[
                         ShiftRecord(
                             employee_id=str(shift.employee_id),
