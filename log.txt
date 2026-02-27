@@ -1,18 +1,31 @@
-PS D:\Project_Code\AIScheduling\backend> uvicorn app.main:app --reload
-INFO:     Will watch for changes in these directories: ['D:\\Project_Code\\AIScheduling\\backend']
-INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
-INFO:     Started reloader process [11568] using WatchFiles
-INFO:     Started server process [2752]
-INFO:     Waiting for application startup.
-Database initialized successfully
-INFO:     Application startup complete.
-INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60277 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60277 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60277 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51174 - "POST /api/schedule/auto-generate HTTP/1.1" 200 OK
-INFO:     127.0.0.1:56332 - "POST /api/schedule/auto-generate HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54783 - "GET /api/init-data?month=2026-01&group_id=B HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54783 - "GET /api/init-data?month=2026-01&group_id=A HTTP/1.1" 200 OK
+?plugins=forms,container-queries:64 cdn.tailwindcss.com should not be used in production. To use Tailwind CSS in production, install it as a PostCSS plugin or use the Tailwind CLI: https://tailwindcss.com/docs/installation
+(anonymous) @ ?plugins=forms,container-queries:64
+(anonymous) @ ?plugins=forms,container-queries:64Understand this warning
+(index):1 [Intervention] Slow network is detected. See https://www.chromestatus.com/feature/5636954674692096 for more details. Fallback font will be used while loading: https://fonts.gstatic.com/s/materialicons/v145/flUhRq6tzZclQEJ-Vdg-IuiaDsNc.woff2
+index-B4mj7fJT.js:55 Backend not available - no employee data loaded
+(anonymous) @ index-B4mj7fJT.js:55
+(anonymous) @ index-B4mj7fJT.js:55
+On @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+ke @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+ke @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+Xr @ index-B4mj7fJT.js:48
+(anonymous) @ index-B4mj7fJT.js:48
+I @ index-B4mj7fJT.js:25Understand this warning
+(index):1 Access to fetch at 'http://101.37.203.158:8000/health' from origin 'http://101.37.203.158' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.Understand this error
+index-B4mj7fJT.js:55  GET http://101.37.203.158:8000/health net::ERR_FAILED 502 (Bad Gateway)
+Hy @ index-B4mj7fJT.js:55
+(anonymous) @ index-B4mj7fJT.js:55
+(anonymous) @ index-B4mj7fJT.js:55
+On @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+ke @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+ke @ index-B4mj7fJT.js:48
+br @ index-B4mj7fJT.js:48
+Xr @ index-B4mj7fJT.js:48
+(anonymous) @ index-B4mj7fJT.js:48
+I @ index-B4mj7fJT.js:25Understand this error
+index-B4mj7fJT.js:55 Backend not available, using local mode
