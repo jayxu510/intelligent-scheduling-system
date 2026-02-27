@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Conflict, ShiftType } from '../types';
+import { Conflict, ShiftType, Employee } from '../types';
 
 interface MatrixFooterProps {
   stats: {
@@ -11,20 +11,31 @@ interface MatrixFooterProps {
     targetRate: number;
   };
   conflicts: Conflict[];
+  employees: Employee[]; // 新增：员工列表，用于将ID映射为姓名
   onOptimize?: () => void; // 新增：一键优化
   onUndoOptimize?: () => void; // 新增：回退优化
   canUndo?: boolean; // 新增：是否可以回退
 }
 
-const MatrixFooter: React.FC<MatrixFooterProps> = ({ stats, conflicts, onOptimize, onUndoOptimize, canUndo = false }) => {
+const MatrixFooter: React.FC<MatrixFooterProps> = ({ stats, conflicts, employees, onOptimize, onUndoOptimize, canUndo = false }) => {
   const [showConflictDetails, setShowConflictDetails] = useState(false);
+
+  // 将员工ID映射为姓名
+  const getEmployeeNames = (employeeIds: string[]): string => {
+    const employeeMap = new Map(employees.map(emp => [emp.id, emp.name]));
+    return employeeIds.map(id => employeeMap.get(id) || id).join(', ');
+  };
 
   const getShiftText = (type?: ShiftType) => {
     switch(type) {
-      case ShiftType.SLEEP: return 'SLEEP';
+      case ShiftType.DAY: return '白班';
+      case ShiftType.SLEEP: return '睡觉';
       case ShiftType.MINI_NIGHT: return '小夜';
       case ShiftType.LATE_NIGHT: return '大夜';
-      default: return '夜班';
+      case ShiftType.VACATION: return '休假';
+      case ShiftType.CUSTOM: return '自定义';
+      case ShiftType.NONE: return '无';
+      default: return ''; // 没有班次类型时返回空字符串
     }
   };
 
@@ -144,14 +155,14 @@ const MatrixFooter: React.FC<MatrixFooterProps> = ({ stats, conflicts, onOptimiz
                     <span className="material-icons text-red-500 text-xl mt-0.5">warning</span>
                     <div className="flex-1">
                       <div className="text-sm font-bold text-red-700 dark:text-red-400 mb-1">
-                        {conflict.date} {conflict.shiftType && `- ${getShiftText(conflict.shiftType)}`}
+                        {conflict.date} {conflict.shiftType && conflict.shiftType !== ShiftType.NONE && `- ${getShiftText(conflict.shiftType)}`}
                       </div>
                       <div className="text-sm text-slate-700 dark:text-slate-300">
                         {conflict.message}
                       </div>
                       {conflict.employeeIds.length > 0 && (
                         <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                          涉及员工: {conflict.employeeIds.join(', ')}
+                          涉及员工: {getEmployeeNames(conflict.employeeIds)}
                         </div>
                       )}
                     </div>

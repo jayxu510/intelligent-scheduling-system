@@ -1158,6 +1158,7 @@ const App: React.FC = () => {
       <MatrixFooter
         stats={stats}
         conflicts={conflicts}
+        employees={employees}
         onOptimize={handleOptimizeSchedule}
         onUndoOptimize={handleUndoOptimize}
         canUndo={backupSchedules !== null}
