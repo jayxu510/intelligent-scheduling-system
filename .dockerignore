@@ -1,0 +1,12 @@
+# 忽略前端依赖
+web/node_modules
+web/dist
+
+# 忽略后端虚拟环境和缓存
+backend/venv
+backend/__pycache__
+backend/.pytest_cache
+
+# 忽略其他系统文件
+.git
+.DS_Store

@@ -1,55 +1,22 @@
-"""
-数据库配置模块
-MySQL 连接配置和 Session 管理
-"""
 import os
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from dotenv import load_dotenv
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-# 加载 .env 文件
-load_dotenv()
-
-# 数据库连接配置 - 从环境变量读取，提供默认值
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "3306")
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "123456")
-DB_NAME = os.getenv("DB_NAME", "aischeduling")
-
-# MySQL 连接字符串
-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
-
-# 创建数据库引擎
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,  # 自动检测断开的连接
-    pool_recycle=3600,   # 1小时回收连接
-    echo=False           # 设置为True可打印SQL语句用于调试
+# 优先读取环境变量 DATABASE_URL（Docker 部署时会使用）
+# 如果没有环境变量（本地开发时），则回退使用本地的 MySQL 账号密码
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql+pymysql://root:123456@localhost:3306/aischeduling" # 此处可保留您本地开发的密码
 )
 
-# 创建 Session 工厂
+engine = create_engine(SQLALCHEMY_DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-
-# 声明基类
 Base = declarative_base()
 
-
 def get_db():
-    """
-    获取数据库会话的依赖注入函数
-    用于 FastAPI 的 Depends
-    """
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
-
-
-def init_db():
-    """
-    初始化数据库，创建所有表
-    """
-    from . import models  # 导入模型以确保它们被注册
-    Base.metadata.create_all(bind=engine)

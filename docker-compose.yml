@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: scheduling_mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456      # root管理员密码
+      MYSQL_DATABASE: aischeduling # 初始化创建的数据库名
+      MYSQL_USER: sched_user                 # 项目专属数据库账号
+      MYSQL_PASSWORD: sched_password         # 项目专属数据库密码
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  backend:
+    build: ./backend
+    container_name: scheduling_backend
+    restart: always
+    environment:
+      # 这里配置给 config.py 读取，注意 @db 代表连接上面那个 mysql 容器
+      - DATABASE_URL=mysql+pymysql://sched_user:sched_password@db:3306/intelligent_scheduling
+    depends_on:
+      - db
+
+  frontend:
+    build: ./web
+    container_name: scheduling_frontend
+    restart: always
+    ports:
+      - "80:80" # 对外暴露 80 端口
+    depends_on:
+      - backend
+
+volumes:
+  mysql_data:
