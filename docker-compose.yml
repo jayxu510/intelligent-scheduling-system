@@ -21,7 +21,7 @@ services:
     restart: always
     environment:
       # 这里配置给 config.py 读取，注意 @db 代表连接上面那个 mysql 容器
-      - DATABASE_URL=mysql+pymysql://sched_user:sched_password@db:3306/intelligent_scheduling
+      - DATABASE_URL=mysql+pymysql://sched_user:sched_password@db:3306/aischeduling
     depends_on:
       - db
 
