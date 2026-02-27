@@ -69,7 +69,8 @@ const App: React.FC = () => {
   const [schedules, setSchedules] = useState<DailySchedule[]>([]);
   const [workDays, setWorkDays] = useState<string[]>([]);
   const [avoidanceRules, setAvoidanceRules] = useState<AvoidanceRule[]>([]);
-  const [lockedCells, setLockedCells] = useState<Set<string>>(new Set()); // 用户手动修改过的单元格
+  const [lockedCells, setLockedCells] = useState<Set<string>>(new Set()); // 锁定的单元格
+  const [backupSchedules, setBackupSchedules] = useState<DailySchedule[] | null>(null); // 一键优化前的备份
   const [isLoading, setIsLoading] = useState(false);
   const [isBackendAvailable, setIsBackendAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -157,6 +158,7 @@ const App: React.FC = () => {
   useEffect(() => {
     loadInitData();
     setLockedCells(new Set()); // 切换月份/组别时清空锁定
+    setBackupSchedules(null); // 清空备份
   }, [selectedMonth, activeGroup, isBackendAvailable]);
 
   // 设置首个工作日
@@ -215,10 +217,9 @@ const App: React.FC = () => {
 
   // Sync schedules robustly when employees list changes (only in local mode)
   useEffect(() => {
-    if (isBackendAvailable) return; // 后端模式下不需要本地同步
-
+    // 同步员工和排班数据：确保每个员工在每个日期都有记录
     setSchedules(prev => {
-      if (prev.length === 0) return prev;
+      if (prev.length === 0 || employees.length === 0) return prev;
       return prev.map(day => {
         const updatedRecords = employees.map(emp => {
           const existing = day.records.find(r => r.employeeId === emp.id);
@@ -231,7 +232,7 @@ const App: React.FC = () => {
         return { ...day, records: updatedRecords };
       });
     });
-  }, [employees, isBackendAvailable]);
+  }, [employees]);
 
   // 添加员工
   const handleAddEmployee = useCallback(async () => {
@@ -388,20 +389,40 @@ const App: React.FC = () => {
   }, []);
 
   const handleUpdateShift = useCallback((date: string, empId: string, newType: ShiftType, label?: string) => {
-    // 记录用户手动修改的单元格
-    setLockedCells(prev => {
-      const next = new Set(prev);
-      next.add(`${date}:${empId}`);
-      return next;
-    });
+    // 更新前端状态
+    setSchedules(prev => {
+      // 创建新的数组，确保引用改变
+      const updated = prev.map(s => {
+        if (s.date !== date) return s;
 
-    setSchedules(prev => prev.map(s => {
-      if (s.date !== date) return s;
-      return {
-        ...s,
-        records: s.records.map(r => r.employeeId === empId ? { ...r, type: newType, label: label ?? undefined } : r)
-      };
-    }));
+        // 创建新的 records 数组
+        const updatedRecords = s.records.map(r => {
+          if (r.employeeId === empId) {
+            // 创建新的 record 对象
+            return {
+              ...r,
+              type: newType,
+              label: label ?? undefined,
+              // 确保所有字段都被复制
+              employeeId: r.employeeId,
+              date: r.date,
+              seatType: r.seatType,
+              isLocked: r.isLocked
+            };
+          }
+          return r;
+        });
+
+        // 创建新的 schedule 对象
+        return {
+          date: s.date,
+          dayOfWeek: s.dayOfWeek,
+          records: updatedRecords
+        };
+      });
+
+      return updated;
+    });
 
     // 实时保存到数据库
     if (isBackendAvailable) {
@@ -422,22 +443,252 @@ const App: React.FC = () => {
   const handleRescheduleRow = useCallback((date: string) => {
     setSchedules(prev => prev.map(s => {
       if (s.date !== date) return s;
-      return { ...s, records: autoScheduleRowLogic(date, employees) };
+
+      // 保存锁定的单元格
+      const lockedRecords = s.records.filter(r => {
+        const cellKey = `${date}-${r.employeeId}`;
+        return lockedCells.has(cellKey);
+      });
+
+      // 生成新的排班
+      const newRecords = autoScheduleRowLogic(date, employees);
+
+      // 合并：锁定的单元格保留原值，其他使用新生成的值
+      const mergedRecords = newRecords.map(newRecord => {
+        const locked = lockedRecords.find(lr => lr.employeeId === newRecord.employeeId);
+        return locked || newRecord;
+      });
+
+      return { ...s, records: mergedRecords };
+    }));
+  }, [employees, lockedCells]);
+
+  // 切换单元格锁定状态
+  const toggleCellLock = useCallback((date: string, empId: string) => {
+    const cellKey = `${date}-${empId}`;
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(cellKey)) {
+        newSet.delete(cellKey);
+      } else {
+        newSet.add(cellKey);
+      }
+      return newSet;
+    });
+
+    // 更新 ShiftRecord 的 isLocked 属性
+    setSchedules(prev => prev.map(s => {
+      if (s.date !== date) return s;
+      return {
+        ...s,
+        records: s.records.map(r => {
+          if (r.employeeId === empId) {
+            const cellKey = `${date}-${empId}`;
+            const isLocked = !lockedCells.has(cellKey);
+            return { ...r, isLocked };
+          }
+          return r;
+        })
+      };
+    }));
+  }, [lockedCells]);
+
+  // 锁定整行
+  const lockRow = useCallback((date: string) => {
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      employees.forEach(emp => {
+        newSet.add(`${date}-${emp.id}`);
+      });
+      return newSet;
+    });
+
+    // 更新 ShiftRecord 的 isLocked 属性
+    setSchedules(prev => prev.map(s => {
+      if (s.date !== date) return s;
+      return {
+        ...s,
+        records: s.records.map(r => ({ ...r, isLocked: true }))
+      };
     }));
   }, [employees]);
 
+  // 解锁整行
+  const unlockRow = useCallback((date: string) => {
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      employees.forEach(emp => {
+        newSet.delete(`${date}-${emp.id}`);
+      });
+      return newSet;
+    });
+
+    // 更新 ShiftRecord 的 isLocked 属性
+    setSchedules(prev => prev.map(s => {
+      if (s.date !== date) return s;
+      return {
+        ...s,
+        records: s.records.map(r => ({ ...r, isLocked: false }))
+      };
+    }));
+  }, [employees]);
+
+  // 锁定整列
+  const lockColumn = useCallback((empId: string) => {
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      schedules.forEach(schedule => {
+        newSet.add(`${schedule.date}-${empId}`);
+      });
+      return newSet;
+    });
+
+    // 更新 ShiftRecord 的 isLocked 属性
+    setSchedules(prev => prev.map(s => ({
+      ...s,
+      records: s.records.map(r =>
+        r.employeeId === empId ? { ...r, isLocked: true } : r
+      )
+    })));
+  }, [schedules]);
+
+  // 解锁整列
+  const unlockColumn = useCallback((empId: string) => {
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      schedules.forEach(schedule => {
+        newSet.delete(`${schedule.date}-${empId}`);
+      });
+      return newSet;
+    });
+
+    // 更新 ShiftRecord 的 isLocked 属性
+    setSchedules(prev => prev.map(s => ({
+      ...s,
+      records: s.records.map(r =>
+        r.employeeId === empId ? { ...r, isLocked: false } : r
+      )
+    })));
+  }, [schedules]);
+
+  // 一键优化（保留锁定的单元格，只优化当日及以后）
+  const handleOptimizeSchedule = useCallback(async () => {
+    if (!isBackendAvailable) {
+      alert('后端服务不可用，无法优化');
+      return;
+    }
+
+    // 获取今天的日期
+    const today = new Date().toISOString().split('T')[0];
+
+    // 过滤出今天及以后的排班
+    const futureSchedules = schedules.filter(s => s.date >= today);
+
+    if (futureSchedules.length === 0) {
+      alert('没有需要优化的日期（当日及以后）');
+      return;
+    }
+
+    // 备份当前排班
+    setBackupSchedules(schedules);
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      // 收集锁定的单元格数据（只包含今天及以后的）
+      const lockedRecords = futureSchedules.flatMap(schedule =>
+        schedule.records.filter(r => {
+          const cellKey = `${schedule.date}-${r.employeeId}`;
+          return lockedCells.has(cellKey);
+        })
+      );
+
+      // 获取优化的起止日期
+      const startDate = futureSchedules[0].date;
+      const endDate = futureSchedules[futureSchedules.length - 1].date;
+
+      const result = await autoGenerateSchedule({
+        month: selectedMonth,
+        group_id: activeGroup,
+        start_date: startDate,
+        end_date: endDate,
+        locked_records: lockedRecords.map(r => ({
+          employee_id: parseInt(r.employeeId),
+          date: r.date,
+          shift_type: r.type,
+        })),
+      });
+
+      // 转换并更新排班数据
+      const convertedSchedules = result.schedules.map(convertScheduleFromDTO);
+
+      setSchedules(prev => {
+        const newSchedules = [...prev];
+        convertedSchedules.forEach(newSchedule => {
+          const idx = newSchedules.findIndex(s => s.date === newSchedule.date);
+          if (idx !== -1) {
+            // 保留锁定单元格的数据
+            const mergedRecords = newSchedule.records.map(newRecord => {
+              const cellKey = `${newSchedule.date}-${newRecord.employeeId}`;
+              if (lockedCells.has(cellKey)) {
+                // 使用原有的锁定数据
+                const oldRecord = prev[idx].records.find(r => r.employeeId === newRecord.employeeId);
+                return oldRecord ? { ...oldRecord, isLocked: true } : newRecord;
+              }
+              return newRecord;
+            });
+            newSchedules[idx] = { ...newSchedule, records: mergedRecords };
+          } else {
+            newSchedules.push(newSchedule);
+          }
+        });
+        newSchedules.sort((a, b) => a.date.localeCompare(b.date));
+        return newSchedules;
+      });
+
+      console.log('Schedule optimized:', result.statistics);
+      alert(`优化成功！已优化 ${convertedSchedules.length} 天的排班`);
+    } catch (err) {
+      console.error('Optimize schedule failed:', err);
+      setError('优化排班失败');
+      alert('优化失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isBackendAvailable, selectedMonth, activeGroup, schedules, lockedCells]);
+
+  // 回退到优化前的状态
+  const handleUndoOptimize = useCallback(() => {
+    if (backupSchedules) {
+      setSchedules(backupSchedules);
+      setBackupSchedules(null);
+    }
+  }, [backupSchedules]);
+
   // 智能一键排班 - 使用后端 OR-Tools 算法
   const handleAutoScheduleAll = useCallback(async () => {
-    // 清空用户手动修改记录（全新排班）
-    setLockedCells(new Set());
+    // 不清空锁定记录，保留用户锁定的单元格
     if (isBackendAvailable) {
       setIsLoading(true);
       setError(null);
 
       try {
+        // 收集锁定的单元格数据
+        const lockedRecords = schedules.flatMap(schedule =>
+          schedule.records.filter(r => {
+            const cellKey = `${schedule.date}-${r.employeeId}`;
+            return lockedCells.has(cellKey);
+          })
+        );
+
         const result = await autoGenerateSchedule({
           month: selectedMonth,
           group_id: activeGroup,
+          locked_records: lockedRecords.map(r => ({
+            employee_id: parseInt(r.employeeId),
+            date: r.date,
+            shift_type: r.type,
+          })),
         });
 
         // 转换并更新排班数据
@@ -449,7 +700,17 @@ const App: React.FC = () => {
           convertedSchedules.forEach(newSchedule => {
             const idx = newSchedules.findIndex(s => s.date === newSchedule.date);
             if (idx !== -1) {
-              newSchedules[idx] = newSchedule;
+              // 保留锁定单元格的数据
+              const mergedRecords = newSchedule.records.map(newRecord => {
+                const cellKey = `${newSchedule.date}-${newRecord.employeeId}`;
+                if (lockedCells.has(cellKey)) {
+                  // 使用原有的锁定数据
+                  const oldRecord = prev[idx].records.find(r => r.employeeId === newRecord.employeeId);
+                  return oldRecord ? { ...oldRecord, isLocked: true } : newRecord;
+                }
+                return newRecord;
+              });
+              newSchedules[idx] = { ...newSchedule, records: mergedRecords };
             } else {
               // 如果当前没有该日期的排班，直接添加
               newSchedules.push(newSchedule);
@@ -479,7 +740,7 @@ const App: React.FC = () => {
         records: autoScheduleRowLogic(s.date, employees)
       })));
     }
-  }, [isBackendAvailable, selectedMonth, activeGroup, employees]);
+  }, [isBackendAvailable, selectedMonth, activeGroup, employees, schedules, lockedCells]);
 
   // 保存排班
   const handleSaveSchedule = useCallback(async () => {
@@ -882,11 +1143,23 @@ const App: React.FC = () => {
             showWorkDaySelector={showWorkDaySelector}
             selectedMonth={selectedMonth}
             onSetFirstWorkDay={handleSetFirstWorkDay}
+            lockedCells={lockedCells}
+            onToggleCellLock={toggleCellLock}
+            onLockRow={lockRow}
+            onUnlockRow={unlockRow}
+            onLockColumn={lockColumn}
+            onUnlockColumn={unlockColumn}
           />
         )}
       </main>
 
-      <MatrixFooter stats={stats} conflicts={conflicts} />
+      <MatrixFooter
+        stats={stats}
+        conflicts={conflicts}
+        onOptimize={handleOptimizeSchedule}
+        onUndoOptimize={handleUndoOptimize}
+        canUndo={backupSchedules !== null}
+      />
     </div>
   );
 };

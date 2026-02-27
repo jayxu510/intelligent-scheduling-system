@@ -16,6 +16,12 @@ interface MatrixGridProps {
   showWorkDaySelector?: boolean;
   selectedMonth?: string;
   onSetFirstWorkDay?: (day: number) => void;
+  lockedCells?: Set<string>;
+  onToggleCellLock?: (date: string, empId: string) => void;
+  onLockRow?: (date: string) => void;
+  onUnlockRow?: (date: string) => void;
+  onLockColumn?: (empId: string) => void;
+  onUnlockColumn?: (empId: string) => void;
 }
 
 // 内部组件：处理中文输入法的输入框
@@ -58,7 +64,13 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
   onUpdateShift, onSwapShifts, onRescheduleRow, onApplySuggestion,
   showWorkDaySelector = false,
   selectedMonth = '',
-  onSetFirstWorkDay
+  onSetFirstWorkDay,
+  lockedCells = new Set(),
+  onToggleCellLock,
+  onLockRow,
+  onUnlockRow,
+  onLockColumn,
+  onUnlockColumn
 }) => {
   const [dragInfo, setDragInfo] = useState<{ date: string, empId: string } | null>(null);
   const [selectedDay, setSelectedDay] = useState<number>(0);
@@ -138,33 +150,48 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
         </div>
       )}
 
-      <div 
+      <div
         className="grid"
         style={{
-          gridTemplateColumns: `80px repeat(${employees.length}, 70px) 40px 140px`
+          gridTemplateColumns: `80px repeat(${employees.length}, 70px) 40px 140px 80px`
         }}
       >
         {/* Sticky Header */}
         <div className="sticky top-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-r border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-bold text-slate-400">日期</div>
-        {employees.map((emp, idx) => (
-          <div key={emp.id} className="sticky top-0 z-50 h-16 bg-white dark:bg-slate-800 border-b border-r border-slate-200 dark:border-slate-700 p-1 group">
-            <div className="flex flex-col items-center h-full justify-between">
-              <EmployeeNameInput
-                value={emp.name}
-                onUpdate={(val) => onUpdateEmployeeName(emp.id, val)}
-              />
-              <span className={`text-[8px] uppercase font-bold tracking-widest ${idx < 6 ? 'text-primary' : 'text-slate-400'}`}>
-                {idx < 6 ? '主任' : '普通'}
-              </span>
-              <button 
-                onClick={() => onRemoveEmployee(emp.id)}
-                className="absolute top-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
-              >
-                <span className="material-icons text-[12px]">cancel</span>
-              </button>
+        {employees.map((emp, idx) => {
+          // 检查该列是否全部锁定
+          const isColumnLocked = schedules.length > 0 && schedules.every(s => lockedCells.has(`${s.date}-${emp.id}`));
+
+          return (
+            <div key={emp.id} className="sticky top-0 z-50 h-16 bg-white dark:bg-slate-800 border-b border-r border-slate-200 dark:border-slate-700 p-1 group">
+              <div className="flex flex-col items-center h-full justify-between">
+                <EmployeeNameInput
+                  value={emp.name}
+                  onUpdate={(val) => onUpdateEmployeeName(emp.id, val)}
+                />
+                <span className={`text-[8px] uppercase font-bold tracking-widest ${idx < 6 ? 'text-primary' : 'text-slate-400'}`}>
+                  {idx < 6 ? '主任' : '普通'}
+                </span>
+                <button
+                  onClick={() => onRemoveEmployee(emp.id)}
+                  className="absolute top-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
+                >
+                  <span className="material-icons text-[12px]">cancel</span>
+                </button>
+                {/* 锁定/解锁整列按钮 */}
+                <button
+                  onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
+                  className="absolute bottom-0 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all"
+                  title={isColumnLocked ? "解锁整列" : "锁定整列"}
+                >
+                  <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
+                    {isColumnLocked ? 'lock' : 'lock_open'}
+                  </span>
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         <div className="sticky top-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 px-2">
           <button onClick={onAddEmployee} className="w-6 h-6 rounded-full bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all shadow-sm flex items-center justify-center shrink-0" title="添加员工">
             <span className="material-icons text-[16px]">add</span>
@@ -177,6 +204,7 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
           )}
         </div>
         <div className="sticky top-0 right-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-primary uppercase tracking-widest">统计</div>
+        <div className="sticky top-0 right-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-slate-400 uppercase tracking-widest">锁定</div>
 
         {/* Schedule Rows */}
         {schedules.map((schedule) => {
@@ -229,6 +257,8 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
                     isChiefMissing={!!chiefConflict}
                     isIndivConflict={isIndivConflict}
                     cellConflicts={cellConflicts}
+                    isLocked={lockedCells.has(`${schedule.date}-${emp.id}`)}
+                    onToggleLock={() => onToggleCellLock?.(schedule.date, emp.id)}
                     onUpdate={(type: ShiftType, label?: string) => {
                       onUpdateShift(schedule.date, emp.id, type, label);
                     }}
@@ -278,6 +308,24 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
                    <span className="text-[9px] text-slate-400 mt-0.5 tracking-tighter">/{employees.length}</span>
                 </div>
               </div>
+
+              {/* 锁定整行按钮 */}
+              <div className="h-14 border-b border-l border-slate-200 dark:border-slate-800 flex items-center justify-center group">
+                {(() => {
+                  const isRowLocked = employees.length > 0 && employees.every(emp => lockedCells.has(`${schedule.date}-${emp.id}`));
+                  return (
+                    <button
+                      onClick={() => isRowLocked ? onUnlockRow?.(schedule.date) : onLockRow?.(schedule.date)}
+                      className="p-1 rounded bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                      title={isRowLocked ? "解锁整行" : "锁定整行"}
+                    >
+                      <span className={`material-icons text-[14px] ${isRowLocked ? 'text-green-600' : 'text-slate-400'}`}>
+                        {isRowLocked ? 'lock' : 'lock_open'}
+                      </span>
+                    </button>
+                  );
+                })()}
+              </div>
             </React.Fragment>
           );
         })}
@@ -303,22 +351,21 @@ const ShiftCell: React.FC<{
   isChiefMissing: boolean,
   isIndivConflict: boolean,
   cellConflicts: Conflict[],
+  isLocked: boolean, // 新增：是否锁定
+  onToggleLock: () => void, // 新增：切换锁定
   onUpdate: (type: ShiftType, label?: string) => void,
   onApplySuggestion: (suggestion: ConflictSuggestion) => void,
   onDragStart: () => void,
   onDrop: () => void
-}> = ({ record, employeeName, isChiefCandidate, isChiefMissing, isIndivConflict, cellConflicts, onUpdate, onApplySuggestion, onDragStart, onDrop }) => {
+}> = ({ record, employeeName, isChiefCandidate, isChiefMissing, isIndivConflict, cellConflicts, isLocked, onToggleLock, onUpdate, onApplySuggestion, onDragStart, onDrop }) => {
   const [isOver, setIsOver] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
-  const [showConflictTooltip, setShowConflictTooltip] = useState(false);
-  const [tooltipBelow, setTooltipBelow] = useState(false);
   const [dropdownAbove, setDropdownAbove] = useState(false);
   const [customText, setCustomText] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const cellRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const tooltipCloseTimer = useRef<NodeJS.Timeout | null>(null);
 
   // 点击外部关闭下拉
   useEffect(() => {
@@ -330,8 +377,17 @@ const ShiftCell: React.FC<{
         setCustomText('');
       }
     };
+    const scrollHandler = () => {
+      setShowDropdown(false);
+      setShowCustomInput(false);
+      setCustomText('');
+    };
     document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
+    window.addEventListener('scroll', scrollHandler, true);
+    return () => {
+      document.removeEventListener('mousedown', handler);
+      window.removeEventListener('scroll', scrollHandler, true);
+    };
   }, [showDropdown]);
 
   // 自定义输入时自动聚焦
@@ -340,15 +396,6 @@ const ShiftCell: React.FC<{
       inputRef.current.focus();
     }
   }, [showCustomInput]);
-
-  // 清理提示框关闭定时器
-  useEffect(() => {
-    return () => {
-      if (tooltipCloseTimer.current) {
-        clearTimeout(tooltipCloseTimer.current);
-      }
-    };
-  }, []);
 
   const colors: Record<ShiftType, string> = {
     [ShiftType.LATE_NIGHT]: 'bg-[#1e3a8a] text-white',
@@ -418,42 +465,54 @@ const ShiftCell: React.FC<{
           // 检测下方空间是否足够（下拉菜单约 280px 高）
           if (cellRef.current) {
             const rect = cellRef.current.getBoundingClientRect();
-            setDropdownAbove(window.innerHeight - rect.bottom < 280);
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const spaceAbove = rect.top;
+            // 如果下方空间不足 300px，且上方空间更大，则向上显示
+            setDropdownAbove(spaceBelow < 300 && spaceAbove > spaceBelow);
           }
           setShowDropdown(true);
         }
-      }}
-      onMouseEnter={() => {
-        // 清除关闭定时器（如果正在等待关闭）
-        if (tooltipCloseTimer.current) {
-          clearTimeout(tooltipCloseTimer.current);
-          tooltipCloseTimer.current = null;
-        }
-        if (cellConflicts.length > 0 && !showDropdown && !isDragging) {
-          // 检测单元格上方空间是否足够，不够则在下方显示
-          if (cellRef.current) {
-            const rect = cellRef.current.getBoundingClientRect();
-            setTooltipBelow(rect.top < 200);
-          }
-          setShowConflictTooltip(true);
-        }
-      }}
-      onMouseLeave={() => {
-        // 延迟关闭，给用户时间移动到提示框
-        tooltipCloseTimer.current = setTimeout(() => {
-          setShowConflictTooltip(false);
-        }, 300);
       }}
       className={`h-14 border-r border-b border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center transition-all cursor-pointer select-none relative group
         ${isOver ? 'bg-primary/20 scale-95' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}
         ${hasError ? 'bg-red-50 dark:bg-red-900/10 ring-2 ring-inset ring-red-500/50' : ''}
         ${isIndivConflict && !hasError ? 'bg-orange-50 dark:bg-orange-900/10' : ''}
         ${isChiefCandidate ? 'bg-blue-50/30 dark:bg-blue-900/10 border-l-2 border-l-blue-300 dark:border-l-blue-700' : ''}
+        ${isLocked ? 'ring-2 ring-inset ring-green-500/50' : ''}
       `}
     >
       <div className={`w-[54px] h-6 rounded flex items-center justify-center font-bold text-[10px] shadow-sm transition-transform group-hover:scale-110 ${colors[record.type]}`}>
         {displayLabel}
       </div>
+
+      {/* 锁定图标 */}
+      {isLocked && (
+        <span
+          className="material-icons absolute top-1 left-1 text-green-600 dark:text-green-400 text-[14px] cursor-pointer hover:scale-110 transition-transform"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleLock();
+          }}
+          title="点击解锁"
+        >
+          lock
+        </span>
+      )}
+
+      {/* 解锁图标（hover时显示） */}
+      {!isLocked && (
+        <span
+          className="material-icons absolute top-1 left-1 text-slate-400 dark:text-slate-500 text-[14px] opacity-0 group-hover:opacity-100 cursor-pointer hover:scale-110 transition-all"
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleLock();
+          }}
+          title="点击锁定"
+        >
+          lock_open
+        </span>
+      )}
+
       {hasError && (
         <span className="material-symbols-outlined absolute top-1 right-1 text-red-500 text-[14px] animate-pulse">priority_high</span>
       )}
@@ -466,9 +525,15 @@ const ShiftCell: React.FC<{
       {/* 下拉选择菜单 */}
       {showDropdown && (
         <div
-          className={`absolute left-1/2 -translate-x-1/2 z-[100] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 py-1 min-w-[90px] ${
-            dropdownAbove ? 'bottom-full mb-1' : 'top-full mt-1'
-          }`}
+          className={`fixed z-[9999] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 py-1 min-w-[90px]`}
+          style={{
+            left: cellRef.current ? `${cellRef.current.getBoundingClientRect().left + cellRef.current.getBoundingClientRect().width / 2}px` : '0',
+            transform: 'translateX(-50%)',
+            top: dropdownAbove
+              ? cellRef.current ? `${cellRef.current.getBoundingClientRect().top - 8}px` : '0'
+              : cellRef.current ? `${cellRef.current.getBoundingClientRect().bottom + 8}px` : '0',
+            ...(dropdownAbove && { transform: 'translate(-50%, -100%)' })
+          }}
           onClick={(e) => e.stopPropagation()}
         >
           {!showCustomInput ? (
@@ -518,102 +583,8 @@ const ShiftCell: React.FC<{
           )}
         </div>
       )}
-
-      {/* 冲突详情悬停提示 */}
-      {showConflictTooltip && cellConflicts.length > 0 && !showDropdown && (
-        <div
-          className={`conflict-tooltip absolute left-1/2 -translate-x-1/2 z-[110] bg-white dark:bg-slate-800 rounded-lg shadow-2xl border-2 border-red-300 dark:border-red-700 p-3 min-w-[280px] max-w-[320px] ${
-            tooltipBelow ? 'top-full mt-2' : 'bottom-full mb-2'
-          }`}
-          onClick={(e) => e.stopPropagation()}
-          onMouseEnter={() => {
-            // 清除关闭定时器，保持提示框显示
-            if (tooltipCloseTimer.current) {
-              clearTimeout(tooltipCloseTimer.current);
-              tooltipCloseTimer.current = null;
-            }
-            setShowConflictTooltip(true);
-          }}
-          onMouseLeave={() => {
-            // 延迟关闭提示框
-            tooltipCloseTimer.current = setTimeout(() => {
-              setShowConflictTooltip(false);
-            }, 300);
-          }}
-        >
-          <div className="flex items-start gap-2 mb-2">
-            <span className="material-icons text-red-500 text-[18px]">error</span>
-            <div className="flex-1">
-              <h4 className="text-[12px] font-bold text-red-600 dark:text-red-400 mb-1">冲突详情</h4>
-              <div className="space-y-1">
-                {cellConflicts.map((conflict, idx) => (
-                  <div key={idx} className="text-[10px] text-slate-700 dark:text-slate-300">
-                    • {conflict.message}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* 显示调整建议 */}
-          {cellConflicts.some(c => c.suggestion) && (
-            <div className="mt-3 pt-2 border-t border-slate-200 dark:border-slate-600">
-              <h5 className="text-[11px] font-bold text-blue-600 dark:text-blue-400 mb-2 flex items-center gap-1">
-                <span className="material-icons text-[14px]">lightbulb</span>
-                调整建议
-              </h5>
-              {cellConflicts.map((conflict, idx) => {
-                if (!conflict.suggestion) return null;
-                return (
-                  <div key={idx} className="space-y-2 mb-2">
-                    <p className="text-[10px] text-slate-600 dark:text-slate-400">
-                      {conflict.suggestion.description}
-                    </p>
-                    <div className="space-y-1">
-                      {conflict.suggestion.changes.slice(0, 3).map((change, cidx) => (
-                        <div key={cidx} className="text-[9px] text-slate-500 dark:text-slate-500 pl-2">
-                          → {change.employeeName || change.employeeId}: {getShiftLabel(change.fromType)} → {getShiftLabel(change.toType)}
-                        </div>
-                      ))}
-                      {conflict.suggestion.changes.length > 3 && (
-                        <div className="text-[9px] text-slate-400 pl-2">
-                          ...还有 {conflict.suggestion.changes.length - 3} 项调整
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => {
-                        onApplySuggestion(conflict.suggestion!);
-                        setShowConflictTooltip(false);
-                      }}
-                      className="w-full mt-1 px-3 py-1.5 text-[10px] font-bold bg-blue-500 hover:bg-blue-600 text-white rounded flex items-center justify-center gap-1 transition-colors"
-                    >
-                      <span className="material-icons text-[14px]">auto_fix_high</span>
-                      一键应用调整
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 };
-
-// 辅助函数：获取班次标签
-function getShiftLabel(type: ShiftType): string {
-  const labels: Record<ShiftType, string> = {
-    [ShiftType.DAY]: '白班',
-    [ShiftType.SLEEP]: '睡觉',
-    [ShiftType.MINI_NIGHT]: '小夜',
-    [ShiftType.LATE_NIGHT]: '大夜',
-    [ShiftType.VACATION]: '休假',
-    [ShiftType.CUSTOM]: '自定义',
-    [ShiftType.NONE]: '空班',
-  };
-  return labels[type] || type;
-}
 
 export default MatrixGrid;

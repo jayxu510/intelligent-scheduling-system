@@ -29,6 +29,7 @@ export interface ShiftRecord {
   type: ShiftType;
   label?: string;
   seatType?: string;
+  isLocked?: boolean; // 新增：是否锁定
 }
 
 export interface ConflictSuggestion {

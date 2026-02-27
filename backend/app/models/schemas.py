@@ -191,6 +191,7 @@ class AutoGenerateRequest(BaseModel):
     group_id: str = Field(..., pattern=r"^[ABC]$", examples=["A"])
     start_date: Optional[str] = None  # 可选的开始日期
     end_date: Optional[str] = None    # 可选的结束日期
+    locked_records: Optional[list[dict]] = None  # 新增：锁定的单元格记录
 
 
 class AutoGenerateResponse(BaseModel):

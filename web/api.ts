@@ -48,6 +48,11 @@ export interface AutoGenerateRequest {
   group_id: string;
   start_date?: string;
   end_date?: string;
+  locked_records?: Array<{
+    employee_id: number;
+    date: string;
+    shift_type: string;
+  }>; // 新增：锁定的单元格
 }
 
 export interface AutoGenerateResponse {

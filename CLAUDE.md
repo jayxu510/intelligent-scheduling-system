@@ -36,7 +36,17 @@ AIScheduling is a shift scheduling application for managing employee work schedu
    - Each employee works exactly one shift per day
    - Each shift type has exact headcount (DAY=6, SLEEP=5, MINI_NIGHT=3, LATE_NIGHT=3)
    - Each night shift has exactly one chief from the 6 leaders
-4. Objective: Minimize late night variance + avoidance group penalties
+   - First employee follows fixed pattern: 1 day shift → 2 sleep shifts (循环)
+   - Minimum interval constraints for late night and day shifts
+4. Soft constraints (penalized in objective):
+   - Consecutive shifts of same type (1000x penalty)
+   - Maximum interval violations (500x penalty)
+   - Fairness spread minimization (200x weight)
+5. **Cross-Month Fairness Optimization (NEW)**:
+   - Considers previous month shift counts when optimizing current month
+   - Minimizes spread (max-min) of two-month cumulative shift counts
+   - Ensures long-term balance across all employees (规则4和6)
+6. Objective: Minimize weighted sum of penalties + fairness spread across two months
 
 **Slot Configuration (17 total per day):**
 - Day shift: 6 regular slots

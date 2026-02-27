@@ -26,6 +26,7 @@ from app.models.schemas import (
     DailySchedule,
     ScheduleConstraints,
     AvoidanceGroup,
+    ShiftType,
     # 新增模型
     InitDataResponse,
     AutoGenerateRequest,
@@ -301,6 +302,21 @@ async def auto_generate_schedule(request: AutoGenerateRequest, db: Session = Dep
 
         constraints = ScheduleConstraints(avoidance_groups=avoidance_groups)
 
+        # 处理锁定的单元格
+        locked_assignments = {}
+        if request.locked_records:
+            for locked in request.locked_records:
+                emp_id = str(locked.get('employee_id'))
+                date = locked.get('date')
+                shift_type_str = locked.get('shift_type')
+                if emp_id and date and shift_type_str:
+                    try:
+                        shift_type = ShiftType(shift_type_str)
+                        locked_assignments[(emp_id, date)] = shift_type
+                    except ValueError:
+                        # 忽略无效的班次类型
+                        pass
+
         # 获取上个月的最后几天排班数据（用于考虑跨月大夜班间隔）
         from datetime import datetime, timedelta
         from app.services.crud import get_shifts_by_month
@@ -353,7 +369,8 @@ async def auto_generate_schedule(request: AutoGenerateRequest, db: Session = Dep
             employees=employees,
             work_days=work_days,
             constraints=constraints,
-            previous_schedules=previous_schedules
+            previous_schedules=previous_schedules,
+            locked_assignments=locked_assignments  # 传递锁定的单元格
         )
 
         schedules_raw, statistics = solver.solve()
