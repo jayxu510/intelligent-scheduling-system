@@ -228,17 +228,35 @@ class SchedulingSolver:
         # which the frontend detects as "multiple chiefs" (主任席冲突).
         # With 6 leaders and 3 night shifts (each needing 1 leader),
         # the remaining 3 leaders are assigned to DAY shift.
+        # Constraint 6: 夜班长（主任）资格人员数量限制（硬约束）
         for day in self.work_days:
-            for shift in chief_shifts:
-                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) == 1)
+            # 小夜和大夜：至少 1 名，最多 2 名
+            for shift in [ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]:
+                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) >= 1)
+                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) <= 2)
+            
+            # 睡觉班：至少 1 名，最多 3 名
+            model.Add(sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in self.leader_ids) >= 1)
+            model.Add(sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in self.leader_ids) <= 3)
 
         # Constraint 7: Avoidance group members cannot be in the same shift (硬约束)
         # This guarantees zero avoidance conflicts in the generated schedule.
-        for emp1, emp2 in self.avoidance_pairs:
-            if emp1 in self.emp_ids and emp2 in self.emp_ids:
-                for day in self.work_days:
-                    for shift in shift_types:
-                        model.Add(x[emp1, day, shift] + x[emp2, day, shift] <= 1)
+        # Constraint 7: 避让组隔离规则（硬约束）
+        for group in self.constraints.avoidance_groups:
+            # 提取当前避让组中存在于本次排班名单里的员工ID
+            group_ids = [eid for eid in group.employee_ids if eid in self.emp_ids]
+            if not group_ids:
+                continue
+                
+            for day in self.work_days:
+                # 1. 大夜和小夜：互斥人员最多只能有 1 个（即不能同时排在这两个班次）
+                model.Add(sum(x[emp_id, day, ShiftType.LATE_NIGHT] for emp_id in group_ids) <= 1)
+                model.Add(sum(x[emp_id, day, ShiftType.MINI_NIGHT] for emp_id in group_ids) <= 1)
+                
+                # 2. 睡觉班：互斥人员最多只能有 2 个
+                model.Add(sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in group_ids) <= 2)
+                
+                # 3. 白班：不限制（无需写约束，求解器自然允许任意人数）
 
         # Constraint 7.5: 第一个员工只能上白班或睡觉班（硬约束）
         if len(self.emp_ids) > 0:
@@ -280,6 +298,14 @@ class SchedulingSolver:
                     four_day_nights.append(is_night)
                 # 4天中最多3个夜班
                 model.Add(sum(four_day_nights) <= 3)
+
+        # Constraint 7.75: 保底大夜班约束（硬约束）
+        # 确保除了第一名员工（固定不上大夜）外，所有人每个月至少分到 1 个大夜班
+        for emp_id in self.emp_ids:
+            if emp_id != self.emp_ids[0]:  # 排除第一名员工
+                model.Add(
+                    sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) >= 1
+                )        
 
         # Constraint 7.8: 班次间隔约束
         # 普通席位大夜班：最少间隔3个班，最多间隔6个班
@@ -350,51 +376,18 @@ class SchedulingSolver:
 
                 max_gap_penalties.append(gap_violation)
 
-           # --- 白班间隔（除第一人外所有人员） ---
+            # --- 白班间隔（除第一人外所有人员） ---
             if emp_id != self.emp_ids[0]:  # 第一人有固定规则，排除
-                day_min_gap = 1  # 最少间隔1个班
-                day_max_gap = 3  # 最多间隔3个班
+                day_max_gap = 3  # 最多间隔3天，意味着“任意连续的4天内，必须至少有1个白班”
 
-                is_staff = emp_id not in leader_ids_set
-
-                # 1. 最小间隔约束
-                if is_staff:
-                    # 普通员工：硬约束（绝对不允许连续白班）
-                    for i in range(len(self.work_days) - 1):
-                        model.Add(
-                            x[emp_id, self.work_days[i], ShiftType.DAY] +
-                            x[emp_id, self.work_days[i + 1], ShiftType.DAY] <= 1
-                        )
-                else:
-                    # 主任员工：硬约束 1（绝对不允许连续 3 天白班）
-                    for i in range(len(self.work_days) - 2):
-                        model.Add(
-                            sum(x[emp_id, self.work_days[i+j], ShiftType.DAY] for j in range(3)) <= 2
-                        )
-                    
-                    # 主任员工：硬约束 2（每月最多只允许出现 3 次两连白班，即极少数例外）
-                    consec_pairs = []
-                    for i in range(len(self.work_days) - 1):
-                        pair = model.NewBoolVar(f"day_pair_{emp_id}_{i}")
-                        # pair 变量绑定：连续两天白班时 pair 为 1，否则为 0
-                        model.Add(
-                            x[emp_id, self.work_days[i], ShiftType.DAY] +
-                            x[emp_id, self.work_days[i + 1], ShiftType.DAY] >= 2
-                        ).OnlyEnforceIf(pair)
-                        model.Add(
-                            x[emp_id, self.work_days[i], ShiftType.DAY] +
-                            x[emp_id, self.work_days[i + 1], ShiftType.DAY] <= 1
-                        ).OnlyEnforceIf(pair.Not())
-                        consec_pairs.append(pair)
-                        
-                        # 把这仅有的几次连续作为软惩罚，让求解器在 <3 次的基础上尽量压到更少
-                        max_gap_penalties.append(pair)
-                    
-                    # 硬性熔断：把所有两两连续的次数加起来，不得超过 3 次
-                    model.Add(sum(consec_pairs) <= 3)
+                # 1. 最小间隔约束（所有人适用：硬约束，绝对不允许连续白班）
+                for i in range(len(self.work_days) - 1):
+                    model.Add(
+                        x[emp_id, self.work_days[i], ShiftType.DAY] +
+                        x[emp_id, self.work_days[i + 1], ShiftType.DAY] <= 1
+                    )
 
                 # 2. 最大间隔约束（所有人适用：硬约束）
-                # 间隔最多3天，意味着“任意连续的4天内，必须至少有1个白班”
                 window_size = day_max_gap + 1  # 4
                 for i in range(len(self.work_days) - window_size + 1):
                     window_days = [self.work_days[i+j] for j in range(window_size)]

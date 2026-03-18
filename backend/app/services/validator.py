@@ -90,46 +90,57 @@ def validate_daily_schedule(
                 )
             )
 
-    # Check 3: Chief positions must be filled by leaders
+    # Check 3: 夜班长（主任）资格人员数量校验（适配新规则）
     for shift_type in CHIEF_REQUIRED_SHIFTS:
         emps_in_shift = shift_employees[shift_type]
         leaders_in_shift = [e for e in emps_in_shift if e in leader_ids]
 
+        shift_name = _get_shift_name(shift_type)
+
         if len(leaders_in_shift) == 0:
-            shift_name = _get_shift_name(shift_type)
             errors.append(
                 ValidationError(
                     error_type="CHIEF_MISSING",
                     date=date,
-                    message=f"{shift_name}缺少主任席（夜班长）",
+                    message=f"{shift_name}缺少主任席资格人员",
                     employee_ids=emps_in_shift,
                 )
             )
-        elif len(leaders_in_shift) > 1:
-            shift_name = _get_shift_name(shift_type)
-            errors.append(
-                ValidationError(
-                    error_type="CHIEF_DUPLICATE",
-                    date=date,
-                    message=f"{shift_name}存在多个主任席（夜班长）",
-                    employee_ids=leaders_in_shift,
+        else:
+            # 睡觉班最多3名主任，小夜/大夜最多2名主任
+            max_chiefs = 3 if shift_type == ShiftType.SLEEP else 2
+            if len(leaders_in_shift) > max_chiefs:
+                errors.append(
+                    ValidationError(
+                        error_type="CHIEF_EXCEED_LIMIT",
+                        date=date,
+                        message=f"{shift_name}主任席资格人员超限（最大允许{max_chiefs}人，实际{len(leaders_in_shift)}人）",
+                        employee_ids=leaders_in_shift,
+                    )
                 )
-            )
 
-    # Check 4: Avoidance group conflicts
+    # Check 4: 避让组冲突校验（按班次放宽）
     for group in constraints.avoidance_groups:
         group_emp_ids = set(group.employee_ids)
 
         for shift_type, emps_in_shift in shift_employees.items():
+            # 白班不限制互斥人员
+            if shift_type == ShiftType.DAY:
+                continue
+
             conflicting = [e for e in emps_in_shift if e in group_emp_ids]
-            if len(conflicting) > 1:
+            
+            # 睡觉班最多允许 2 个互斥人员，小夜/大夜最多允许 1 个（即不能同时排）
+            max_allowed = 2 if shift_type == ShiftType.SLEEP else 1
+            
+            if len(conflicting) > max_allowed:
                 shift_name = _get_shift_name(shift_type)
                 emp_names = [emp_by_id[e].name for e in conflicting if e in emp_by_id]
                 errors.append(
                     ValidationError(
                         error_type="AVOIDANCE_CONFLICT",
                         date=date,
-                        message=f"{shift_name}存在避让冲突: {', '.join(emp_names)}",
+                        message=f"{shift_name}存在避让冲突（最大允许{max_allowed}人，实际{len(conflicting)}人）: {', '.join(emp_names)}",
                         employee_ids=conflicting,
                     )
                 )
