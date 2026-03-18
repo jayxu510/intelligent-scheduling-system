@@ -129,21 +129,37 @@ class SchedulingSolver:
                 for j in range(i + 1, len(ids)):
                     self.avoidance_pairs.append((ids[i], ids[j]))
 
-        # 构建历史大夜班映射：每个员工最后一次上大夜班的日期
-        self.last_late_night: dict[str, str] = {}
+        # --- 新增：提取跨月历史完整排班 ---
+        self.num_prev_days = 0
+        self.prev_history_shifts = defaultdict(list)
+        
         # 构建历史班次统计：每个员工上个月各班次的数量（用于跨月公平性）
         self.prev_shift_counts: dict[str, dict[ShiftType, int]] = defaultdict(lambda: defaultdict(int))
 
         if self.previous_schedules:
             sorted_prev = sorted(self.previous_schedules, key=lambda s: s.date)
+            # 截取上个月最后 6 天的排班（大夜最大间隔6天，前置6天足以覆盖所有滑窗）
+            last_schedules = sorted_prev[-6:]
+            self.num_prev_days = len(last_schedules)
+            
+            for schedule in last_schedules:
+                for emp_id in self.emp_ids:
+                    record = next((r for r in schedule.records if r.employee_id == emp_id), None)
+                    shift = record.shift_type if record else ShiftType.NONE
+                    if isinstance(shift, str):
+                        try: shift = ShiftType(shift)
+                        except ValueError: shift = ShiftType.NONE
+                    self.prev_history_shifts[emp_id].append(shift)
+                    
             for schedule in sorted_prev:
                 for record in schedule.records:
-                    # 记录最后一次大夜班日期
-                    if record.shift_type == ShiftType.LATE_NIGHT:
-                        self.last_late_night[record.employee_id] = schedule.date
-                    # 统计各班次数量（排除NONE和VACATION）
-                    if record.shift_type not in [ShiftType.NONE, ShiftType.VACATION]:
-                        self.prev_shift_counts[record.employee_id][record.shift_type] += 1
+                    # 统计各班次数量（排除休假等非正常班次）
+                    if record.shift_type not in [ShiftType.NONE, ShiftType.VACATION, getattr(ShiftType, 'CUSTOM', 'CUSTOM')]:
+                        shift = record.shift_type
+                        if isinstance(shift, str):
+                            try: shift = ShiftType(shift)
+                            except ValueError: continue
+                        self.prev_shift_counts[record.employee_id][shift] += 1
 
         # --- 新增：计算第一名员工的跨月班次规律 (1白2睡循环) ---
         self.first_emp_offset = 0
@@ -182,12 +198,18 @@ class SchedulingSolver:
 
         # Decision variables: x[emp_id, day, shift_type] = 1 if assigned
         x = {}
-        shift_types = [ShiftType.DAY, ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]
+        core_shifts = [ShiftType.DAY, ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]
+        exempt_shifts = [ShiftType.VACATION, ShiftType.NONE, getattr(ShiftType, 'CUSTOM', 'CUSTOM')]
+        all_shifts = core_shifts + exempt_shifts
+        
+        # 保留 shift_types 变量以兼容后续代码
+        shift_types = core_shifts 
 
         for emp_id in self.emp_ids:
             for day in self.work_days:
-                for shift in shift_types:
-                    x[emp_id, day, shift] = model.NewBoolVar(f"x_{emp_id}_{day}_{shift.value}")
+                for shift in all_shifts:
+                    shift_val = shift.value if hasattr(shift, 'value') else shift
+                    x[emp_id, day, shift] = model.NewBoolVar(f"x_{emp_id}_{day}_{shift_val}")
 
         # Chief assignment variables: c[emp_id, day, shift_type] = 1 if assigned as chief
         c = {}
@@ -197,15 +219,32 @@ class SchedulingSolver:
                 for shift in chief_shifts:
                     c[emp_id, day, shift] = model.NewBoolVar(f"c_{emp_id}_{day}_{shift.value}")
 
-        # Constraint 1: Each employee works exactly one shift per day
+        # Constraint 1: 每个员工每天必须分配一个班次（正常班或休假/空班）
         for emp_id in self.emp_ids:
             for day in self.work_days:
-                model.Add(sum(x[emp_id, day, shift] for shift in shift_types) == 1)
+                model.AddExactlyOne(x[emp_id, day, shift] for shift in all_shifts)
 
-        # Constraint 2: Each shift type has exactly the required number of people
+        # Constraint 2: 各岗位定员分配（支持休假动态扣减白班人数）
         for day in self.work_days:
+            # 统计当天处于休假/出差/空班的总人数
+            num_exempt = sum(x[emp_id, day, s] for emp_id in self.emp_ids for s in exempt_shifts)
             for shift, count in SHIFT_TOTALS.items():
-                model.Add(sum(x[emp_id, day, shift] for emp_id in self.emp_ids) == count)
+                if shift == ShiftType.DAY:
+                    # 数学魔法：如果有人休假，优先扣减白班的定员需求，保证排班引擎永不崩溃
+                    model.Add(sum(x[emp_id, day, shift] for emp_id in self.emp_ids) == count - num_exempt)
+                else:
+                    model.Add(sum(x[emp_id, day, shift] for emp_id in self.emp_ids) == count)
+
+        # ====================================================================
+        # --- 跨月时空滑窗探测器（核心科技） ---
+        # ====================================================================
+        total_days = self.num_prev_days + len(self.work_days)
+        def get_x(e_id, idx, stype):
+            """获取索引天的变量：如果是历史天则返回常量(0或1)，如果是本月天则返回布尔变量"""
+            if idx < self.num_prev_days:
+                return 1 if self.prev_history_shifts[e_id][idx] == stype else 0
+            else:
+                return x[e_id, self.work_days[idx - self.num_prev_days], stype]
 
         # Constraint 3: Each chief shift has exactly one leader assigned
         for day in self.work_days:
@@ -283,117 +322,74 @@ class SchedulingSolver:
             if emp_id in self.emp_ids and day in self.work_days:
                 model.Add(x[emp_id, day, shift_type] == 1)
 
-        # Constraint 7.7: 同一人连续夜班（SLEEP/MINI_NIGHT/LATE_NIGHT）不超过3个（硬约束）
+        # --- 新增：堵住求解器乱排自定义班次的漏洞 ---
+        # 除非用户手动锁定，否则求解器绝对不能把任何人排成休假、空班或自定义班次！
+        for emp_id in self.emp_ids:
+            for day in self.work_days:
+                for shift in exempt_shifts:
+                    # 如果这个格子没有被用户锁定为当前的豁免班次，就彻底封死这个变量（强制等于0）
+                    if self.locked_assignments.get((emp_id, day)) != shift:
+                        model.Add(x[emp_id, day, shift] == 0)
+
+        # Constraint 7.7: 同一人连续夜班不超过3个（硬约束，无缝跨月）
+
+        # Constraint 7.7: 同一人连续夜班不超过3个（硬约束，无缝跨月）
         night_shifts = [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]
         for emp_id in self.emp_ids:
-            for i in range(len(self.work_days) - 3):
-                # 连续4天不能全是夜班
-                four_day_nights = []
-                for j in range(4):
-                    day = self.work_days[i + j]
-                    is_night = model.NewBoolVar(f"night_{emp_id}_{i}_{j}")
-                    # is_night == 1 当且仅当该员工当天上任一夜班
-                    model.Add(sum(x[emp_id, day, shift] for shift in night_shifts) >= is_night)
-                    model.Add(sum(x[emp_id, day, shift] for shift in night_shifts) <= is_night * 3)
-                    four_day_nights.append(is_night)
-                # 4天中最多3个夜班
+            for i in range(total_days - 3):
+                # 连续 4 天的滑动窗口扫描
+                four_day_nights = [
+                    sum(get_x(emp_id, i + j, shift) for shift in night_shifts)
+                    for j in range(4)
+                ]
                 model.Add(sum(four_day_nights) <= 3)
 
-        # Constraint 7.75: 保底大夜班约束（硬约束）
-        # 确保除了第一名员工（固定不上大夜）外，所有人每个月至少分到 1 个大夜班
+        # Constraint 7.75: 保底大夜班约束（硬约束）兜底
         for emp_id in self.emp_ids:
-            if emp_id != self.emp_ids[0]:  # 排除第一名员工
-                model.Add(
-                    sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) >= 1
-                )        
+            if emp_id != self.emp_ids[0]:  
+                model.Add(sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) >= 1)
 
-        # Constraint 7.8: 班次间隔约束
-        # 普通席位大夜班：最少间隔3个班，最多间隔6个班
-        # 主任席大夜班：最少间隔3个班，最多间隔5个班
-        # 主任席白班：最少间隔1个班，最多间隔3个班
+        # Constraint 7.8: 班次间隔约束（硬约束，无缝跨月，含“休假跳过”豁免）
         leader_ids_set = set(self.leader_ids) if hasattr(self, 'leader_ids') else set(self.emp_ids[:6])
-        from datetime import datetime
-
-        max_gap_penalties = []
+        max_gap_penalties = [] # 留空以防下文报错
 
         for emp_id in self.emp_ids:
             is_leader = emp_id in leader_ids_set
 
             # --- 大夜班间隔 ---
-            late_min_gap = 3  # 主任和普通都是最少3
+            late_min_gap = 3  
             late_max_gap = 5 if is_leader else 6
 
-            # 考虑上个月的大夜班历史（最小间隔）
-            if emp_id in self.last_late_night:
-                last_date = self.last_late_night[emp_id]
-                last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+            # 1. 大夜班跨月最小间隔
+            window_size_min_late = late_min_gap + 1
+            for i in range(total_days - window_size_min_late + 1):
+                window_sum = sum(get_x(emp_id, i + j, ShiftType.LATE_NIGHT) for j in range(window_size_min_late))
+                model.Add(window_sum <= 1)
 
-                for i, day in enumerate(self.work_days):
-                    current_dt = datetime.strptime(day, "%Y-%m-%d")
-                    days_since_last = (current_dt - last_dt).days
+            # 2. 大夜班跨月最大间隔（含休假豁免）
+            if emp_id != self.emp_ids[0]:
+                window_size_max_late = late_max_gap + 1
+                for i in range(total_days - window_size_max_late + 1):
+                    window_sum = sum(get_x(emp_id, i + j, ShiftType.LATE_NIGHT) for j in range(window_size_max_late))
+                    # 统计该窗口内的休假等豁免班次数量
+                    exempt_sum = sum(get_x(emp_id, i + j, shift) for j in range(window_size_max_late) for shift in exempt_shifts)
+                    # 只要发生休假(exempt_sum >= 1)，规则自动满足，完美跳过断档！
+                    model.Add(window_sum + exempt_sum >= 1)
 
-                    if days_since_last <= late_min_gap:
-                        model.Add(x[emp_id, day, ShiftType.LATE_NIGHT] == 0)
+            # --- 白班间隔 ---
+            if emp_id != self.emp_ids[0]:  
+                day_max_gap = 3  
 
-            # 本月内大夜班最小间隔（硬约束）
-            for i in range(len(self.work_days)):
-                for j in range(1, late_min_gap + 1):
-                    if i + j < len(self.work_days):
-                        model.Add(
-                            x[emp_id, self.work_days[i], ShiftType.LATE_NIGHT] +
-                            x[emp_id, self.work_days[i + j], ShiftType.LATE_NIGHT] <= 1
-                        )
+                # 1. 白班跨月最小间隔：绝对不允许连上白班
+                for i in range(total_days - 1):
+                    model.Add(get_x(emp_id, i, ShiftType.DAY) + get_x(emp_id, i + 1, ShiftType.DAY) <= 1)
 
-            # 本月内大夜班最大间隔（软约束）
-            # 如果第i天上大夜班，接下来 max_gap+1 天内应该再有一个大夜班
-            for i in range(len(self.work_days)):
-                end = min(i + late_max_gap + 2, len(self.work_days))
-                if end - i < 2:
-                    continue
-                # 窗口内大夜班数量：如果第i天是大夜班，窗口内至少还要有1个
-                window_days = [self.work_days[j] for j in range(i + 1, end)]
-                if not window_days:
-                    continue
-                # 如果 x[i, LATE_NIGHT] == 1 且 sum(x[i+1..end, LATE_NIGHT]) == 0，则惩罚
-                no_late_in_window = model.NewBoolVar(f"no_late_window_{emp_id}_{i}")
-                model.Add(
-                    sum(x[emp_id, d, ShiftType.LATE_NIGHT] for d in window_days) == 0
-                ).OnlyEnforceIf(no_late_in_window)
-                model.Add(
-                    sum(x[emp_id, d, ShiftType.LATE_NIGHT] for d in window_days) >= 1
-                ).OnlyEnforceIf(no_late_in_window.Not())
-
-                gap_violation = model.NewBoolVar(f"late_gap_viol_{emp_id}_{i}")
-                # gap_violation == 1 当且仅当 第i天是大夜班 且 窗口内没有大夜班
-                model.AddBoolAnd([
-                    x[emp_id, self.work_days[i], ShiftType.LATE_NIGHT],
-                    no_late_in_window
-                ]).OnlyEnforceIf(gap_violation)
-                model.AddBoolOr([
-                    x[emp_id, self.work_days[i], ShiftType.LATE_NIGHT].Not(),
-                    no_late_in_window.Not()
-                ]).OnlyEnforceIf(gap_violation.Not())
-
-                max_gap_penalties.append(gap_violation)
-
-            # --- 白班间隔（除第一人外所有人员） ---
-            if emp_id != self.emp_ids[0]:  # 第一人有固定规则，排除
-                day_max_gap = 3  # 最多间隔3天，意味着“任意连续的4天内，必须至少有1个白班”
-
-                # 1. 最小间隔约束（所有人适用：硬约束，绝对不允许连续白班）
-                for i in range(len(self.work_days) - 1):
-                    model.Add(
-                        x[emp_id, self.work_days[i], ShiftType.DAY] +
-                        x[emp_id, self.work_days[i + 1], ShiftType.DAY] <= 1
-                    )
-
-                # 2. 最大间隔约束（所有人适用：硬约束）
-                window_size = day_max_gap + 1  # 4
-                for i in range(len(self.work_days) - window_size + 1):
-                    window_days = [self.work_days[i+j] for j in range(window_size)]
-                    model.Add(
-                        sum(x[emp_id, d, ShiftType.DAY] for d in window_days) >= 1
-                    )
+                # 2. 白班跨月最大间隔（含休假豁免）
+                window_size_max_day = day_max_gap + 1
+                for i in range(total_days - window_size_max_day + 1):
+                    window_sum = sum(get_x(emp_id, i + j, ShiftType.DAY) for j in range(window_size_max_day))
+                    exempt_sum = sum(get_x(emp_id, i + j, shift) for j in range(window_size_max_day) for shift in exempt_shifts)
+                    model.Add(window_sum + exempt_sum >= 1)
 
         # Constraint 8: 尽量避免所有班次连续（软约束）
         # 对每个员工、每对相邻工作日、每种班次类型：
@@ -538,10 +534,25 @@ class SchedulingSolver:
             chief_assignments: dict[ShiftType, str] = {}
 
             # First pass: identify all assignments
+            all_shift_types = [ShiftType.DAY, ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT, ShiftType.VACATION, ShiftType.NONE]
+            if hasattr(ShiftType, 'CUSTOM'):
+                all_shift_types.append(getattr(ShiftType, 'CUSTOM'))
+                
             for emp_id in self.emp_ids:
-                for shift in shift_types:
+                for shift in all_shift_types:
                     if solver.Value(x[emp_id, day, shift]) == 1:
-                        shift_assignments[shift].append(emp_id)
+                        if shift in shift_types: # 如果是四大核心排班
+                            shift_assignments[shift].append(emp_id)
+                        else: # 如果是休假/空班，直接录入最终结果，且不占用坑位！
+                            records.append(
+                                ShiftRecord(
+                                    employee_id=emp_id,
+                                    date=day,
+                                    shift_type=shift,
+                                    slot_type=None,
+                                )
+                            )
+                        break
 
             # Identify chiefs
             for emp_id in self.leader_ids:
