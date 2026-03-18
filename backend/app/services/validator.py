@@ -261,6 +261,9 @@ def _check_consecutive_nights(schedules: List[Dict], employees: list[Employee]) 
     errors = []
     emp_by_id = {e.id: e for e in employees}
 
+    # 获取第一名员工的 ID（用于特殊规则豁免）
+    first_emp_id = str(employees[0].id) if employees else None
+
     SHIFT_NAMES = {
         'DAY': '白班',
         'SLEEP': '睡觉班',
@@ -294,6 +297,10 @@ def _check_consecutive_nights(schedules: List[Dict], employees: list[Employee]) 
             next_s = shifts[i + 1]
 
             if current['shift_type'] == next_s['shift_type']:
+                # --- 新增：豁免第一名员工的连续睡觉班 ---
+                if str(emp_id) == first_emp_id and current['shift_type'] == 'SLEEP':
+                    continue
+                
                 shift_name = SHIFT_NAMES.get(current['shift_type'], current['shift_type'])
                 errors.append(
                     ValidationError(

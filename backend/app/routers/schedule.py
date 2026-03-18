@@ -692,7 +692,7 @@ async def validate_month_schedule_endpoint(
                 "date": s.date,
                 "records": [
                     {
-                        "employee_id": r.employee_id,
+                        "employee_id": str(r.employee_id),  # <--- 加上 str() 强制转为字符串
                         "date": r.date,
                         "shift_type": r.shift_type
                     }

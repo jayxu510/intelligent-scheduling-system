@@ -9,6 +9,7 @@ import MatrixFooter from './components/MatrixFooter';
 import {
   fetchInitData,
   autoGenerateSchedule,
+  validateMonthSchedule,
   saveSchedule,
   updateShift,
   downloadExcel,
@@ -76,6 +77,7 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [showWorkDaySelector, setShowWorkDaySelector] = useState(false);
+  const [conflicts, setConflicts] = useState<Conflict[]>([]);
 
   const [year, month] = useMemo(() => {
     const parts = selectedMonth.split('-');
@@ -200,6 +202,70 @@ const App: React.FC = () => {
       setIsLoading(false);
     }
   }, [isBackendAvailable, selectedMonth, activeGroup, loadInitData]);
+
+  // ==========================================
+  // 新增：统一调用后端校验的函数
+  // ==========================================
+  const runValidation = useCallback(async (currentSchedules: DailySchedule[]) => {
+    // 如果后端没连上，或者没有排班数据，就不校验
+    if (!isBackendAvailable || !currentSchedules || currentSchedules.length === 0) {
+      setConflicts([]);
+      return;
+    }
+
+    try {
+      // 1. 把前端的排班数据转成后端 API 需要的格式
+      const dtos = currentSchedules.map(convertScheduleToDTO);
+
+      // 2. 发送给后端校验
+      const res = await validateMonthSchedule(dtos);
+
+      // 3. 把后端返回的错误，转换成前端展示需要的 Conflict 格式
+      const formattedConflicts: Conflict[] = res.errors.map((err: any) => {
+        // 尝试从后端的报错文字中提取出班次类型，这样就能继续完美支持“调整建议”功能
+        let inferredShiftType = ShiftType.NONE;
+        if (err.message.includes('白班')) inferredShiftType = ShiftType.DAY;
+        else if (err.message.includes('睡觉班')) inferredShiftType = ShiftType.SLEEP;
+        else if (err.message.includes('小夜班')) inferredShiftType = ShiftType.MINI_NIGHT;
+        else if (err.message.includes('大夜班')) inferredShiftType = ShiftType.LATE_NIGHT;
+
+        const conflict: Conflict = {
+          type: err.type as any,
+          date: err.date,
+          message: err.message,
+          shiftType: inferredShiftType !== ShiftType.NONE ? inferredShiftType : undefined,
+          employeeIds: (err.employee_ids || []).map(String), // 后端发来的是数字，前端需要转成字符串
+        };
+
+        // 重新生成针对这个冲突的“智能调整建议”
+        const suggestion = generateConflictSuggestion(
+          conflict,
+          currentSchedules,
+          employees,
+          lockedCells
+        );
+        if (suggestion) {
+            conflict.suggestion = suggestion;
+        }
+
+        return conflict;
+      });
+
+      // 4. 更新状态，页面上就会自动出现红框和右下角的报错列表
+      setConflicts(formattedConflicts);
+    } catch (error) {
+      console.error('调用后端校验接口失败:', error);
+    }
+  }, [isBackendAvailable, employees, lockedCells]);
+
+  // ==========================================
+  // 新增：监听排班表变化，自动触发后端校验
+  // ==========================================
+  useEffect(() => {
+    // 只要 schedules 发生任何变化（无论是拉取数据、一键排班还是手动修改）
+    // 都会自动把最新的表发给后端检查
+    runValidation(schedules);
+  }, [schedules, runValidation]);
 
   // 辅助函数：获取班次中文名称（定义在 conflicts 之前）
   const getShiftName = useCallback((shiftType: ShiftType): string => {
@@ -791,292 +857,7 @@ const App: React.FC = () => {
     }
   }, [isBackendAvailable, selectedMonth, activeGroup]);
 
-  const conflicts = useMemo(() => {
-    const results: Conflict[] = [];
 
-    // 只校验当天及以后的排班
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
-
-    const schedulesToCheck = filteredSchedules.filter(s => s.date >= todayStr);
-
-    schedulesToCheck.forEach((schedule) => {
-      // 统计各班次人数
-      const shiftCounts = {
-        [ShiftType.DAY]: 0,
-        [ShiftType.SLEEP]: 0,
-        [ShiftType.MINI_NIGHT]: 0,
-        [ShiftType.LATE_NIGHT]: 0,
-      };
-
-      const activeRecords = schedule.records.filter(
-        r => r.type !== ShiftType.NONE && r.type !== ShiftType.VACATION
-      );
-
-      activeRecords.forEach(r => {
-        if (r.type in shiftCounts) {
-          shiftCounts[r.type as keyof typeof shiftCounts]++;
-        }
-      });
-
-      // A规则：检查每日岗位定员
-      const requirements = {
-        [ShiftType.DAY]: 6,
-        [ShiftType.SLEEP]: 5,
-        [ShiftType.MINI_NIGHT]: 3,
-        [ShiftType.LATE_NIGHT]: 3,
-      };
-
-      Object.entries(requirements).forEach(([shiftType, required]) => {
-        const actual = shiftCounts[shiftType as keyof typeof shiftCounts];
-        if (actual !== required) {
-          results.push({
-            type: 'SLOT_COUNT_MISMATCH',
-            employeeIds: [],
-            date: schedule.date,
-            shiftType: shiftType as ShiftType,
-            message: `${schedule.date.slice(-2)}日 ${getShiftName(shiftType as ShiftType)} 需要${required}人，实际${actual}人`
-          });
-        }
-      });
-
-      // 检查总人数
-      const totalWorking = Object.values(shiftCounts).reduce((a, b) => a + b, 0);
-      if (totalWorking !== 17) {
-        results.push({
-          type: 'TOTAL_COUNT_MISMATCH',
-          employeeIds: [],
-          date: schedule.date,
-          shiftType: ShiftType.NONE,
-          message: `${schedule.date.slice(-2)}日 总排班人数应为17人，实际${totalWorking}人`
-        });
-      }
-
-      // B规则：检查夜班主任席
-      const nightTypes = [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT];
-      nightTypes.forEach(t => {
-        // 前6人是主任资质
-        const chiefCandidates = schedule.records.slice(0, 6).filter(r => r.type === t);
-        // 睡觉班和小夜班允许最多2个主任席，大夜班只允许1个
-        const maxChiefs = (t === ShiftType.LATE_NIGHT) ? 1 : 2;
-        if (chiefCandidates.length === 0) {
-          results.push({
-            type: 'CHIEF_MISSING',
-            employeeIds: [],
-            date: schedule.date,
-            shiftType: t,
-            message: `${schedule.date.slice(-2)}日 ${getShiftName(t)} 缺少主任席`
-          });
-        } else if (chiefCandidates.length > maxChiefs) {
-          results.push({
-            type: 'CHIEF_DUPLICATE',
-            employeeIds: chiefCandidates.map(c => c.employeeId),
-            date: schedule.date,
-            shiftType: t,
-            message: `${schedule.date.slice(-2)}日 ${getShiftName(t)} 主任席超过${maxChiefs}个（当前${chiefCandidates.length}个）`
-          });
-        }
-      });
-
-      // D规则：第一列人员只能上白班和睡觉班
-      if (employees.length > 0) {
-        const firstEmpId = employees[0].id;
-        const firstEmpRecord = schedule.records.find(r => r.employeeId === firstEmpId);
-        if (firstEmpRecord && firstEmpRecord.type !== ShiftType.DAY && firstEmpRecord.type !== ShiftType.SLEEP
-          && firstEmpRecord.type !== ShiftType.NONE && firstEmpRecord.type !== ShiftType.VACATION && firstEmpRecord.type !== ShiftType.CUSTOM) {
-          results.push({
-            type: 'ROLE_MISMATCH',
-            employeeIds: [firstEmpId],
-            date: schedule.date,
-            shiftType: firstEmpRecord.type,
-            message: `${schedule.date.slice(-2)}日 ${employees[0].name} 只能上白班或睡觉班，当前为${getShiftName(firstEmpRecord.type)}`
-          });
-        }
-      }
-
-      // B规则：检查避让组冲突
-      avoidanceRules.forEach(rule => {
-        if (!rule.memberIds || rule.memberIds.length < 2) return;
-
-        Object.values(ShiftType).forEach(shiftType => {
-          if (shiftType === ShiftType.NONE || shiftType === ShiftType.VACATION) return;
-
-          const recordsInShift = schedule.records.filter(r => r.type === shiftType);
-          const conflictingMembers = recordsInShift.filter(r =>
-            rule.memberIds.includes(r.employeeId)
-          );
-
-          if (conflictingMembers.length > 1) {
-            results.push({
-              type: 'AVOIDANCE_CONFLICT',
-              employeeIds: conflictingMembers.map(m => m.employeeId),
-              date: schedule.date,
-              shiftType: shiftType,
-              message: `${schedule.date.slice(-2)}日 ${getShiftName(shiftType)} 存在避让组冲突`
-            });
-          }
-        });
-      });
-    });
-
-    // C规则：检查连续班次（所有班次都尽量不连续）
-    // 但白班和睡觉班允许连续，不产生告警
-    // 按员工构建班次序列（只看当天及以后）
-    const employeeShiftSequences = new Map<string, { date: string; type: ShiftType }[]>();
-    schedulesToCheck.forEach(schedule => {
-      schedule.records.forEach(r => {
-        if (r.type === ShiftType.NONE || r.type === ShiftType.VACATION) return;
-        if (!employeeShiftSequences.has(r.employeeId)) {
-          employeeShiftSequences.set(r.employeeId, []);
-        }
-        employeeShiftSequences.get(r.employeeId)!.push({ date: schedule.date, type: r.type });
-      });
-    });
-
-    employeeShiftSequences.forEach((shifts, empId) => {
-      if (shifts.length < 2) return;
-      shifts.sort((a, b) => a.date.localeCompare(b.date));
-
-      const empName = employees.find(e => e.id === empId)?.name || empId;
-
-      // 检查连续：白班和睡觉班允许连续，其他不允许
-      for (let i = 0; i < shifts.length - 1; i++) {
-        if (shifts[i].type === shifts[i + 1].type) {
-          // 白班和睡觉班连续是允许的，不告警
-          if (shifts[i].type === ShiftType.DAY || shifts[i].type === ShiftType.SLEEP) {
-            continue;
-          }
-
-          // 其他班次连续需要告警
-          results.push({
-            type: 'CONSECUTIVE_VIOLATION',
-            employeeIds: [empId],
-            date: shifts[i].date,
-            shiftType: shifts[i].type,
-            message: `${empName} ${shifts[i].date.slice(5)} 和 ${shifts[i + 1].date.slice(5)} 连续${getShiftName(shifts[i].type)}`
-          });
-        }
-      }
-    });
-
-    // E规则：检查连续夜班（睡觉/小夜/大夜）不超过3个
-    const nightShifts = [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT];
-    employeeShiftSequences.forEach((shifts, empId) => {
-      if (shifts.length < 4) return;
-      shifts.sort((a, b) => a.date.localeCompare(b.date));
-
-      const empName = employees.find(e => e.id === empId)?.name || empId;
-
-      // 滑动窗口检查连续4天
-      for (let i = 0; i <= shifts.length - 4; i++) {
-        const fourDays = shifts.slice(i, i + 4);
-        const nightCount = fourDays.filter(s => nightShifts.includes(s.type)).length;
-
-        if (nightCount > 3) {
-          results.push({
-            type: 'CONSECUTIVE_VIOLATION',
-            employeeIds: [empId],
-            date: fourDays[0].date,
-            shiftType: ShiftType.SLEEP, // 用睡觉班代表夜班
-            message: `${empName} ${fourDays[0].date.slice(5)}-${fourDays[3].date.slice(5)} 连续4天中有${nightCount}个夜班，不能超过3个`
-          });
-          break; // 每个员工只报一次
-        }
-      }
-    });
-
-    // F规则：检查班次间隔
-    // 普通席位大夜班：最少间隔3个班，最多间隔6个班
-    // 主任席大夜班：最少间隔3个班，最多间隔5个班
-    // 主任席白班：最少间隔1个班，最多间隔3个班
-    employeeShiftSequences.forEach((shifts, empId) => {
-      if (shifts.length < 2) return;
-      shifts.sort((a, b) => a.date.localeCompare(b.date));
-
-      const empName = employees.find(e => e.id === empId)?.name || empId;
-      const empIndex = employees.findIndex(e => e.id === empId);
-      const isLeader = empIndex >= 0 && empIndex < 6;
-      const isFirstEmp = empIndex === 0;
-
-      // --- 大夜班间隔检查 ---
-      const lateMinGap = 3;
-      const lateMaxGap = isLeader ? 5 : 6;
-
-      const lateNightIndices: number[] = [];
-      for (let i = 0; i < shifts.length; i++) {
-        if (shifts[i].type === ShiftType.LATE_NIGHT) {
-          lateNightIndices.push(i);
-        }
-      }
-
-      for (let i = 0; i < lateNightIndices.length - 1; i++) {
-        const idx1 = lateNightIndices[i];
-        const idx2 = lateNightIndices[i + 1];
-        const gap = idx2 - idx1 - 1;
-
-        if (gap < lateMinGap) {
-          results.push({
-            type: 'CONSECUTIVE_VIOLATION',
-            employeeIds: [empId],
-            date: shifts[idx1].date,
-            shiftType: ShiftType.LATE_NIGHT,
-            message: `${empName} ${shifts[idx1].date.slice(5)} 和 ${shifts[idx2].date.slice(5)} 大夜班间隔${gap}个班，需要至少${lateMinGap}个班`
-          });
-        } else if (gap > lateMaxGap) {
-          results.push({
-            type: 'CONSECUTIVE_VIOLATION',
-            employeeIds: [empId],
-            date: shifts[idx1].date,
-            shiftType: ShiftType.LATE_NIGHT,
-            message: `${empName} ${shifts[idx1].date.slice(5)} 和 ${shifts[idx2].date.slice(5)} 大夜班间隔${gap}个班，不宜超过${lateMaxGap}个班`
-          });
-        }
-      }
-
-      // --- 白班间隔检查（第一人除外，有固定规则） ---
-      if (!isFirstEmp) {
-        const dayMinGap = 1;
-        const dayMaxGap = 3;
-
-        const dayIndices: number[] = [];
-        for (let i = 0; i < shifts.length; i++) {
-          if (shifts[i].type === ShiftType.DAY) {
-            dayIndices.push(i);
-          }
-        }
-
-        for (let i = 0; i < dayIndices.length - 1; i++) {
-          const idx1 = dayIndices[i];
-          const idx2 = dayIndices[i + 1];
-          const gap = idx2 - idx1 - 1;
-
-          if (gap < dayMinGap) {
-            results.push({
-              type: 'CONSECUTIVE_VIOLATION',
-              employeeIds: [empId],
-              date: shifts[idx1].date,
-              shiftType: ShiftType.DAY,
-              message: `${empName} ${shifts[idx1].date.slice(5)} 和 ${shifts[idx2].date.slice(5)} 白班间隔${gap}个班，需要至少${dayMinGap}个班`
-            });
-          } else if (gap > dayMaxGap) {
-            results.push({
-              type: 'CONSECUTIVE_VIOLATION',
-              employeeIds: [empId],
-              date: shifts[idx1].date,
-              shiftType: ShiftType.DAY,
-              message: `${empName} ${shifts[idx1].date.slice(5)} 和 ${shifts[idx2].date.slice(5)} 白班间隔${gap}个班，不宜超过${dayMaxGap}个班`
-            });
-          }
-        }
-      }
-    });
-
-    // 为每个冲突生成调整建议
-    return results.map(conflict => ({
-      ...conflict,
-      suggestion: generateConflictSuggestion(conflict, filteredSchedules, employees, lockedCells)
-    }));
-  }, [filteredSchedules, avoidanceRules, getShiftName, employees, lockedCells]);
 
   const stats = useMemo(() => {
     const totalWorkingShifts = schedules.reduce((acc, s) =>
