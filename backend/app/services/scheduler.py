@@ -505,7 +505,7 @@ class SchedulingSolver:
 
         # Solve
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 30.0
+        solver.parameters.max_time_in_seconds = 120.0
         # 每次求解使用不同的随机种子，生成不同的排班方案
         solver.parameters.random_seed = random.randint(0, 2**31 - 1)
         status = solver.Solve(model)
