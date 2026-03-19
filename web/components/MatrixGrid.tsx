@@ -22,6 +22,9 @@ interface MatrixGridProps {
   onUnlockRow?: (date: string) => void;
   onLockColumn?: (empId: string) => void;
   onUnlockColumn?: (empId: string) => void;
+  readOnly?: boolean;
+  compact?: boolean;
+  headerInsertIndex?: number;
 }
 
 // 内部组件：处理中文输入法的输入框
@@ -70,7 +73,10 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
   onLockRow,
   onUnlockRow,
   onLockColumn,
-  onUnlockColumn
+  onUnlockColumn,
+  readOnly = false,
+  compact = false,
+  headerInsertIndex
 }) => {
   const [dragInfo, setDragInfo] = useState<{ date: string, empId: string } | null>(null);
   const [selectedDay, setSelectedDay] = useState<number>(0);
@@ -80,6 +86,22 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
     if (!selectedMonth) return 31;
     const [year, month] = selectedMonth.split('-').map(Number);
     return new Date(year, month, 0).getDate();
+  }, [selectedMonth]);
+
+  const headerHeight = compact ? 48 : 64;
+  const rowHeight = compact ? 40 : 56;
+  const spacerWidth = 35;
+  const hasSpacer = employees.length > 6;
+  const primaryEmployees = employees.slice(0, 6);
+  const secondaryEmployees = employees.slice(6);
+
+  const previousMonthPrefix = React.useMemo(() => {
+    if (!selectedMonth) return '';
+    const [year, month] = selectedMonth.split('-').map(Number);
+    const prevDate = new Date(year, month - 2, 1);
+    const prevYear = prevDate.getFullYear();
+    const prevMonth = (prevDate.getMonth() + 1).toString().padStart(2, '0');
+    return `${prevYear}-${prevMonth}`;
   }, [selectedMonth]);
 
   const handleDaySelect = (day: number) => {
@@ -97,8 +119,28 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
     return conflicts.some(c => c.date === date && c.employeeIds.includes(empId));
   };
 
+  const dateColumnWidth = 64;
+  const statsColumnWidth = 140;
+  const actionColumnWidth = 40;
+  const lockColumnWidth = 64;
+
+  const gridTemplateColumns = React.useMemo(() => {
+    const primaryCount = primaryEmployees.length;
+    const secondaryCount = secondaryEmployees.length;
+    const primaryColumns = primaryCount > 0 ? `repeat(${primaryCount}, 70px)` : '';
+    const secondaryColumns = secondaryCount > 0 ? `repeat(${secondaryCount}, 70px)` : '';
+    const spacer = hasSpacer ? `${spacerWidth}px` : '';
+    const trailingLock = hasSpacer ? '' : ` ${lockColumnWidth}px`;
+    return `${dateColumnWidth}px ${primaryColumns} ${spacer} ${secondaryColumns} ${actionColumnWidth}px ${statsColumnWidth}px${trailingLock}`;
+  }, [primaryEmployees.length, secondaryEmployees.length, hasSpacer]);
+
+  const insertHeaderIndex = headerInsertIndex ?? Math.max(0, schedules.length - 1);
+
+  const isReadOnlyRow = (date: string) => date.startsWith(previousMonthPrefix);
+  const getRowReadOnly = (date: string) => readOnly || isReadOnlyRow(date);
+
   return (
-    <div className="inline-block min-w-full bg-white dark:bg-slate-900 shadow-2xl rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+    <div className={`inline-block min-w-full bg-white dark:bg-slate-900 shadow-2xl rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden ${compact ? 'matrix-compact' : ''} ${readOnly ? 'matrix-readonly' : ''}`}>
       {/* 工作日选择器 */}
       {showWorkDaySelector && (
         <div className="bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-800 dark:to-slate-700 border-b-2 border-blue-200 dark:border-blue-900 p-6">
@@ -153,61 +195,11 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
       <div
         className="grid"
         style={{
-          gridTemplateColumns: `80px repeat(${employees.length}, 70px) 40px 140px 80px`
+          gridTemplateColumns: gridTemplateColumns
         }}
       >
-        {/* Sticky Header */}
-        <div className="sticky top-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-r border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-bold text-slate-400">日期</div>
-        {employees.map((emp, idx) => {
-          // 检查该列是否全部锁定
-          const isColumnLocked = schedules.length > 0 && schedules.every(s => lockedCells.has(`${s.date}-${emp.id}`));
-
-          return (
-            <div key={emp.id} className="sticky top-0 z-50 h-16 bg-white dark:bg-slate-800 border-b border-r border-slate-200 dark:border-slate-700 p-1 group">
-              <div className="flex flex-col items-center h-full justify-between">
-                <EmployeeNameInput
-                  value={emp.name}
-                  onUpdate={(val) => onUpdateEmployeeName(emp.id, val)}
-                />
-                <span className={`text-[8px] uppercase font-bold tracking-widest ${idx < 6 ? 'text-primary' : 'text-slate-400'}`}>
-                  {idx < 6 ? '主任' : '普通'}
-                </span>
-                <button
-                  onClick={() => onRemoveEmployee(emp.id)}
-                  className="absolute top-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
-                >
-                  <span className="material-icons text-[12px]">cancel</span>
-                </button>
-                {/* 锁定/解锁整列按钮 */}
-                <button
-                  onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
-                  className="absolute bottom-0 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-all"
-                  title={isColumnLocked ? "解锁整列" : "锁定整列"}
-                >
-                  <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
-                    {isColumnLocked ? 'lock' : 'lock_open'}
-                  </span>
-                </button>
-              </div>
-            </div>
-          );
-        })}
-        <div className="sticky top-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 px-2">
-          <button onClick={onAddEmployee} className="w-6 h-6 rounded-full bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all shadow-sm flex items-center justify-center shrink-0" title="添加员工">
-            <span className="material-icons text-[16px]">add</span>
-          </button>
-          {employees.length === 0 && (
-            <div className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded text-[10px] text-yellow-800 dark:text-yellow-200 whitespace-nowrap">
-              <span className="material-icons text-[12px]">warning</span>
-              <span className="font-bold">请添加人员</span>
-            </div>
-          )}
-        </div>
-        <div className="sticky top-0 right-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-primary uppercase tracking-widest">统计</div>
-        <div className="sticky top-0 right-0 z-50 h-16 bg-slate-100 dark:bg-slate-800 border-b border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-slate-400 uppercase tracking-widest">锁定</div>
-
         {/* Schedule Rows */}
-        {schedules.map((schedule) => {
+        {schedules.map((schedule, index) => {
           const counts = {
             day: schedule.records.filter(r => r.type === ShiftType.DAY).length,
             sleep: schedule.records.filter(r => r.type === ShiftType.SLEEP).length,
@@ -216,14 +208,169 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
             total: schedule.records.filter(r => r.type !== ShiftType.NONE && r.type !== ShiftType.VACATION).length
           };
 
+          const rowReadOnly = getRowReadOnly(schedule.date);
+
           return (
             <React.Fragment key={schedule.date}>
-              <div className="sticky left-0 z-30 h-14 bg-white dark:bg-slate-900 border-b border-r border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center">
-                <span className="text-[10px] text-slate-400 font-medium">{schedule.date.slice(5)}</span>
-                <span className="text-[12px] font-black">{schedule.dayOfWeek}</span>
+              {index === insertHeaderIndex && (
+                <>
+                  <div
+                    className="sticky top-0 z-50 bg-slate-100 dark:bg-slate-800 border-y border-r border-slate-200 dark:border-slate-700 flex items-center justify-center text-[12px] font-black text-slate-700 dark:text-slate-200"
+                    style={{ height: headerHeight }}
+                  >
+                    {selectedMonth}
+                  </div>
+                  {primaryEmployees.map((emp, idx) => {
+                    // 检查该列是否全部锁定（只统计可编辑行）
+                    const editableSchedules = schedules.filter(s => !getRowReadOnly(s.date));
+                    const isColumnLocked = editableSchedules.length > 0 && editableSchedules.every(s => lockedCells.has(`${s.date}-${emp.id}`));
+
+                    return (
+                      <div
+                        key={`header-primary-${emp.id}`}
+                        className="sticky top-0 z-50 bg-white dark:bg-slate-800 border-y border-r border-slate-200 dark:border-slate-700 p-1 group"
+                        style={{ height: headerHeight }}
+                      >
+                        <div className="flex flex-col items-center h-full justify-between">
+                          {readOnly ? (
+                            <div className="w-full text-center text-[12px] font-black text-slate-500 dark:text-slate-400 px-1">
+                              {emp.name}
+                            </div>
+                          ) : (
+                            <EmployeeNameInput
+                              value={emp.name}
+                              onUpdate={(val) => onUpdateEmployeeName(emp.id, val)}
+                            />
+                          )}
+                          {!readOnly && (
+                            <button
+                              onClick={() => {
+                                const confirmed = window.confirm(`确认删除【${emp.name}】人员吗？删除后将无法恢复。`);
+                                if (confirmed) {
+                                  onRemoveEmployee(emp.id);
+                                }
+                              }}
+                              className="absolute top-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
+                            >
+                              <span className="material-icons text-[12px]">cancel</span>
+                            </button>
+                          )}
+                          {/* 锁定/解锁整列按钮 */}
+                          {!readOnly && (
+                            <button
+                              onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
+                              className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
+                              title={isColumnLocked ? "解锁整列" : "锁定整列"}
+                            >
+                              <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
+                                {isColumnLocked ? 'lock' : 'lock_open'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {hasSpacer && (
+                    <div
+                      className="sticky top-0 z-50 bg-slate-50 dark:bg-slate-800 border-y border-x border-slate-200 dark:border-slate-700 flex items-center justify-center"
+                      style={{ height: headerHeight }}
+                    >
+                      <span className="text-[11px] font-black text-slate-400">锁</span>
+                    </div>
+                  )}
+                  {secondaryEmployees.map((emp, idx) => {
+                    const editableSchedules = schedules.filter(s => !getRowReadOnly(s.date));
+                    const isColumnLocked = editableSchedules.length > 0 && editableSchedules.every(s => lockedCells.has(`${s.date}-${emp.id}`));
+                    const empIndex = idx + primaryEmployees.length;
+
+                    return (
+                      <div
+                        key={`header-secondary-${emp.id}`}
+                        className="sticky top-0 z-50 bg-white dark:bg-slate-800 border-y border-r border-slate-200 dark:border-slate-700 p-1 group"
+                        style={{ height: headerHeight }}
+                      >
+                        <div className="flex flex-col items-center h-full justify-between">
+                          {readOnly ? (
+                            <div className="w-full text-center text-[12px] font-black text-slate-500 dark:text-slate-400 px-1">
+                              {emp.name}
+                            </div>
+                          ) : (
+                            <EmployeeNameInput
+                              value={emp.name}
+                              onUpdate={(val) => onUpdateEmployeeName(emp.id, val)}
+                            />
+                          )}
+                          {!readOnly && (
+                            <button
+                              onClick={() => {
+                                const confirmed = window.confirm(`确认删除【${emp.name}】人员吗？删除后将无法恢复。`);
+                                if (confirmed) {
+                                  onRemoveEmployee(emp.id);
+                                }
+                              }}
+                              className="absolute top-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
+                            >
+                              <span className="material-icons text-[12px]">cancel</span>
+                            </button>
+                          )}
+                          {!readOnly && (
+                            <button
+                              onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
+                              className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
+                              title={isColumnLocked ? "解锁整列" : "锁定整列"}
+                            >
+                              <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
+                                {isColumnLocked ? 'lock' : 'lock_open'}
+                              </span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div
+                    className="sticky top-0 z-50 bg-slate-100 dark:bg-slate-800 border-y border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 px-2"
+                    style={{ height: headerHeight }}
+                  >
+                    {!readOnly && (
+                      <button onClick={onAddEmployee} className="w-6 h-6 rounded-full bg-primary/10 text-primary hover:bg-primary hover:text-white transition-all shadow-sm flex items-center justify-center shrink-0" title="添加员工">
+                        <span className="material-icons text-[16px]">add</span>
+                      </button>
+                    )}
+                    {employees.length === 0 && (
+                      <div className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded text-[10px] text-yellow-800 dark:text-yellow-200 whitespace-nowrap">
+                        <span className="material-icons text-[12px]">warning</span>
+                        <span className="font-bold">请添加人员</span>
+                      </div>
+                    )}
+                  </div>
+                  <div
+                    className="sticky top-0 right-0 z-50 bg-slate-100 dark:bg-slate-800 border-y border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-primary uppercase tracking-widest"
+                    style={{ height: headerHeight }}
+                  >
+                    统计
+                  </div>
+                  {!hasSpacer && (
+                    <div
+                      className="sticky top-0 right-0 z-50 bg-slate-100 dark:bg-slate-800 border-y border-l border-slate-200 dark:border-slate-700 flex items-center justify-center text-[11px] font-black text-slate-400 uppercase tracking-widest"
+                      style={{ height: headerHeight }}
+                    >
+                      锁定
+                    </div>
+                  )}
+                </>
+              )}
+
+              <div
+                className="sticky left-0 z-30 bg-white dark:bg-slate-900 border-b border-r border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center"
+                style={{ height: rowHeight }}
+              >
+                <span className="text-[12px] text-sky-700 dark:text-sky-300 font-extrabold tracking-wide">{schedule.date.slice(5)}</span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold">{schedule.dayOfWeek}</span>
               </div>
-              
-              {employees.map((emp, idx) => {
+
+              {primaryEmployees.map((emp, idx) => {
                 let record = schedule.records.find(r => r.employeeId === emp.id);
 
                 // 如果找不到记录（例如新添加的员工），创建一个默认的空记录
@@ -268,22 +415,103 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
                       if (dragInfo) onSwapShifts(dragInfo, { date: schedule.date, empId: emp.id });
                       setDragInfo(null);
                     }}
+                    readOnly={rowReadOnly}
+                    rowHeight={rowHeight}
                   />
                 );
               })}
 
-              <div className="h-14 border-b border-slate-200 dark:border-slate-800 flex items-center justify-center">
-                <button 
-                  onClick={() => onRescheduleRow(schedule.date)}
-                  className="p-1 rounded bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-primary hover:text-white transition-all shadow-sm border border-slate-200 dark:border-slate-700"
-                  title="重新生成该日排班"
+              {hasSpacer && (
+                <div
+                  className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex items-center justify-center"
+                  style={{ height: rowHeight }}
                 >
-                  <span className="material-icons text-[14px]">refresh</span>
-                </button>
+                  {!rowReadOnly && (() => {
+                    const isRowLocked = employees.length > 0 && employees.every(emp => lockedCells.has(`${schedule.date}-${emp.id}`));
+                    return (
+                      <button
+                        onClick={() => isRowLocked ? onUnlockRow?.(schedule.date) : onLockRow?.(schedule.date)}
+                        className="p-1 rounded bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                        title={isRowLocked ? "解锁整行" : "锁定整行"}
+                      >
+                        <span className={`material-icons text-[14px] ${isRowLocked ? 'text-green-600' : 'text-slate-400'}`}>
+                          {isRowLocked ? 'lock' : 'lock_open'}
+                        </span>
+                      </button>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {secondaryEmployees.map((emp, idx) => {
+                let record = schedule.records.find(r => r.employeeId === emp.id);
+
+                if (!record) {
+                  record = {
+                    employeeId: emp.id,
+                    date: schedule.date,
+                    type: ShiftType.NONE
+                  };
+                }
+
+                const chiefConflict = getShiftConflict(schedule.date, record.type);
+                const isIndivConflict = checkIndividualConflict(schedule.date, emp.id);
+
+                const cellConflicts = conflicts.filter(c =>
+                  c.date === schedule.date && (
+                    c.employeeIds.includes(emp.id) ||
+                    c.shiftType === record.type ||
+                    c.type === 'SLOT_COUNT_MISMATCH' ||
+                    c.type === 'TOTAL_COUNT_MISMATCH'
+                  )
+                );
+
+                return (
+                  <ShiftCell
+                    key={emp.id}
+                    record={record}
+                    employeeName={emp.name}
+                    isChiefCandidate={idx + primaryEmployees.length < 6}
+                    isChiefMissing={!!chiefConflict}
+                    isIndivConflict={isIndivConflict}
+                    cellConflicts={cellConflicts}
+                    isLocked={lockedCells.has(`${schedule.date}-${emp.id}`)}
+                    onToggleLock={() => onToggleCellLock?.(schedule.date, emp.id)}
+                    onUpdate={(type: ShiftType, label?: string) => {
+                      onUpdateShift(schedule.date, emp.id, type, label);
+                    }}
+                    onApplySuggestion={onApplySuggestion}
+                    onDragStart={() => setDragInfo({ date: schedule.date, empId: emp.id })}
+                    onDrop={() => {
+                      if (dragInfo) onSwapShifts(dragInfo, { date: schedule.date, empId: emp.id });
+                      setDragInfo(null);
+                    }}
+                    readOnly={rowReadOnly}
+                    rowHeight={rowHeight}
+                  />
+                );
+              })}
+
+              <div
+                className="border-b border-slate-200 dark:border-slate-800 flex items-center justify-center"
+                style={{ height: rowHeight }}
+              >
+                {!rowReadOnly && (
+                  <button 
+                    onClick={() => onRescheduleRow(schedule.date)}
+                    className="p-1 rounded bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-primary hover:text-white transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                    title="重新生成该日排班"
+                  >
+                    <span className="material-icons text-[14px]">refresh</span>
+                  </button>
+                )}
               </div>
 
               {/* Pixel Perfect Statistics Column */}
-              <div className="sticky right-0 h-14 bg-slate-50 dark:bg-slate-800 border-l border-b border-slate-200 dark:border-slate-700 flex items-center px-2 z-30">
+              <div
+                className="sticky right-0 bg-slate-50 dark:bg-slate-800 border-l border-b border-slate-200 dark:border-slate-700 flex items-center px-2 z-30"
+                style={{ height: rowHeight }}
+              >
                 <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 flex-1 items-center">
                   <div className="flex justify-between items-center text-[10px] font-black">
                     <span className="text-amber-500 mr-1">白</span>
@@ -310,22 +538,27 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
               </div>
 
               {/* 锁定整行按钮 */}
-              <div className="h-14 border-b border-l border-slate-200 dark:border-slate-800 flex items-center justify-center group">
-                {(() => {
-                  const isRowLocked = employees.length > 0 && employees.every(emp => lockedCells.has(`${schedule.date}-${emp.id}`));
-                  return (
-                    <button
-                      onClick={() => isRowLocked ? onUnlockRow?.(schedule.date) : onLockRow?.(schedule.date)}
-                      className="p-1 rounded bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm border border-slate-200 dark:border-slate-700"
-                      title={isRowLocked ? "解锁整行" : "锁定整行"}
-                    >
-                      <span className={`material-icons text-[14px] ${isRowLocked ? 'text-green-600' : 'text-slate-400'}`}>
-                        {isRowLocked ? 'lock' : 'lock_open'}
-                      </span>
-                    </button>
-                  );
-                })()}
-              </div>
+              {!hasSpacer && (
+                <div
+                  className="border-b border-l border-slate-200 dark:border-slate-800 flex items-center justify-center group"
+                  style={{ height: rowHeight }}
+                >
+                  {!rowReadOnly && (() => {
+                    const isRowLocked = employees.length > 0 && employees.every(emp => lockedCells.has(`${schedule.date}-${emp.id}`));
+                    return (
+                      <button
+                        onClick={() => isRowLocked ? onUnlockRow?.(schedule.date) : onLockRow?.(schedule.date)}
+                        className="p-1 rounded bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                        title={isRowLocked ? "解锁整行" : "锁定整行"}
+                      >
+                        <span className={`material-icons text-[14px] ${isRowLocked ? 'text-green-600' : 'text-slate-400'}`}>
+                          {isRowLocked ? 'lock' : 'lock_open'}
+                        </span>
+                      </button>
+                    );
+                  })()}
+                </div>
+              )}
             </React.Fragment>
           );
         })}
@@ -356,8 +589,10 @@ const ShiftCell: React.FC<{
   onUpdate: (type: ShiftType, label?: string) => void,
   onApplySuggestion: (suggestion: ConflictSuggestion) => void,
   onDragStart: () => void,
-  onDrop: () => void
-}> = ({ record, employeeName, isChiefCandidate, isChiefMissing, isIndivConflict, cellConflicts, isLocked, onToggleLock, onUpdate, onApplySuggestion, onDragStart, onDrop }) => {
+  onDrop: () => void,
+  readOnly?: boolean,
+  rowHeight?: number
+}> = ({ record, employeeName, isChiefCandidate, isChiefMissing, isIndivConflict, cellConflicts, isLocked, onToggleLock, onUpdate, onApplySuggestion, onDragStart, onDrop, readOnly = false, rowHeight = 56 }) => {
   const [isOver, setIsOver] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [showCustomInput, setShowCustomInput] = useState(false);
@@ -442,23 +677,34 @@ const ShiftCell: React.FC<{
   return (
     <div
       ref={cellRef}
-      draggable
+      draggable={!readOnly}
       onDragStart={() => {
+        if (readOnly) return;
         setIsDragging(true);
         onDragStart();
       }}
       onDragEnd={() => {
+        if (readOnly) return;
         // 延迟重置拖拽状态，避免 onClick 立即触发
         setTimeout(() => setIsDragging(false), 50);
       }}
-      onDragOver={(e) => { e.preventDefault(); setIsOver(true); }}
-      onDragLeave={() => setIsOver(false)}
+      onDragOver={(e) => {
+        if (readOnly) return;
+        e.preventDefault();
+        setIsOver(true);
+      }}
+      onDragLeave={() => {
+        if (readOnly) return;
+        setIsOver(false);
+      }}
       onDrop={(e) => {
+        if (readOnly) return;
         e.preventDefault();
         setIsOver(false);
         onDrop();
       }}
       onClick={(e) => {
+        if (readOnly) return;
         e.stopPropagation();
         // 只有在非拖拽状态下才打开下拉
         if (!isDragging && !showDropdown) {
@@ -473,41 +719,28 @@ const ShiftCell: React.FC<{
           setShowDropdown(true);
         }
       }}
-      className={`h-14 border-r border-b border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center transition-all cursor-pointer select-none relative group
+      className={`border-r border-b border-slate-100 dark:border-slate-800 flex flex-col items-center justify-center transition-all ${readOnly ? 'cursor-default' : 'cursor-pointer'} select-none relative group
         ${isOver ? 'bg-primary/20 scale-95' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}
         ${isChiefCandidate ? 'bg-blue-50/30 dark:bg-blue-900/10 border-l-2 border-l-blue-300 dark:border-l-blue-700' : ''}
         ${isLocked ? 'ring-2 ring-inset ring-green-500/50' : ''}
       `}
+      style={{ height: rowHeight }}
     >
-      <div className={`w-[54px] h-6 rounded flex items-center justify-center font-bold text-[10px] shadow-sm transition-transform group-hover:scale-110 ${colors[record.type]}`}>
+      <div className={`w-[54px] h-6 rounded flex items-center justify-center font-bold text-[10px] shadow-sm transition-transform ${readOnly ? '' : 'group-hover:scale-110'} ${colors[record.type]}`}>
         {displayLabel}
       </div>
 
-      {/* 锁定图标 */}
-      {isLocked && (
+      {/* 锁定图标（仅悬停显示，红色） */}
+      {!readOnly && (
         <span
-          className="material-icons absolute top-1 left-1 text-green-600 dark:text-green-400 text-[14px] cursor-pointer hover:scale-110 transition-transform"
+          className="material-icons absolute top-1 left-1 text-red-500 text-[14px] opacity-0 group-hover:opacity-100 cursor-pointer hover:scale-110 transition-all"
           onClick={(e) => {
             e.stopPropagation();
             onToggleLock();
           }}
-          title="点击解锁"
+          title={isLocked ? "点击解锁" : "点击锁定"}
         >
-          lock
-        </span>
-      )}
-
-      {/* 解锁图标（hover时显示） */}
-      {!isLocked && (
-        <span
-          className="material-icons absolute top-1 left-1 text-slate-400 dark:text-slate-500 text-[14px] opacity-0 group-hover:opacity-100 cursor-pointer hover:scale-110 transition-all"
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleLock();
-          }}
-          title="点击锁定"
-        >
-          lock_open
+          {isLocked ? 'lock' : 'lock_open'}
         </span>
       )}
 
@@ -518,7 +751,7 @@ const ShiftCell: React.FC<{
       )}
 
       {/* 下拉选择菜单 */}
-      {showDropdown && (
+      {!readOnly && showDropdown && (
         <div
           className={`fixed z-[9999] bg-white dark:bg-slate-800 rounded-lg shadow-xl border border-slate-200 dark:border-slate-700 py-1 min-w-[90px]`}
           style={{

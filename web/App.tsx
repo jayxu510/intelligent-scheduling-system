@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { generateMonthSchedules, autoScheduleRowLogic } from './data';
 import { ShiftType, DailySchedule, Conflict, Employee, ShiftRecord, EmployeeRole, AvoidanceRule, ConflictSuggestion } from './types';
 import { generateConflictSuggestion } from './conflictResolver';
@@ -72,16 +72,30 @@ const App: React.FC = () => {
   const [avoidanceRules, setAvoidanceRules] = useState<AvoidanceRule[]>([]);
   const [lockedCells, setLockedCells] = useState<Set<string>>(new Set()); // 锁定的单元格
   const [backupSchedules, setBackupSchedules] = useState<DailySchedule[] | null>(null); // 一键优化前的备份
+  const [previousSchedules, setPreviousSchedules] = useState<DailySchedule[]>([]);
+  const [previousWorkDays, setPreviousWorkDays] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isBackendAvailable, setIsBackendAvailable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [showWorkDaySelector, setShowWorkDaySelector] = useState(false);
   const [conflicts, setConflicts] = useState<Conflict[]>([]);
+  const matrixScrollRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
 
   const [year, month] = useMemo(() => {
     const parts = selectedMonth.split('-');
     return [parseInt(parts[0]), parseInt(parts[1]) - 1];
+  }, [selectedMonth]);
+
+  const previousMonth = useMemo(() => {
+    const [yearStr, monthStr] = selectedMonth.split('-');
+    const currentYear = parseInt(yearStr);
+    const currentMonth = parseInt(monthStr);
+    const prevDate = new Date(currentYear, currentMonth - 2, 1);
+    const prevYear = prevDate.getFullYear();
+    const prevMonth = (prevDate.getMonth() + 1).toString().padStart(2, '0');
+    return `${prevYear}-${prevMonth}`;
   }, [selectedMonth]);
 
   // 检查后端服务状态
@@ -106,6 +120,8 @@ const App: React.FC = () => {
       console.warn('Backend not available - no employee data loaded');
       setEmployees([]);
       setSchedules([]);
+      setPreviousSchedules([]);
+      setPreviousWorkDays([]);
       return;
     }
 
@@ -113,35 +129,43 @@ const App: React.FC = () => {
     setError(null);
 
     try {
-      const data = await fetchInitData(selectedMonth, activeGroup);
+      const [currentData, previousData] = await Promise.all([
+        fetchInitData(selectedMonth, activeGroup),
+        fetchInitData(previousMonth, activeGroup)
+      ]);
 
       // 转换员工数据
-      const convertedEmployees = data.employees.map(convertEmployeeFromDTO);
+      const convertedEmployees = currentData.employees.map(convertEmployeeFromDTO);
       setEmployees(convertedEmployees);
 
       // 转换排班数据
-      const convertedSchedules = data.schedules.map(convertScheduleFromDTO);
+      const convertedSchedules = currentData.schedules.map(convertScheduleFromDTO);
       setSchedules(convertedSchedules);
 
       // 设置工作日
-      setWorkDays(data.work_days);
+      setWorkDays(currentData.work_days);
 
       // 判断是否需要显示工作日选择器
       // 当工作日列表为空时，显示选择器
-      setShowWorkDaySelector(data.work_days.length === 0);
+      setShowWorkDaySelector(currentData.work_days.length === 0);
 
       // 设置避让规则
-      setAvoidanceRules(data.avoidance_rules.map(r => ({
+      setAvoidanceRules(currentData.avoidance_rules.map(r => ({
         id: r.id.toString(),
         name: r.name || undefined,
         memberIds: r.member_ids.map(id => id.toString()),
         description: r.description || undefined,
       })));
 
+      // 上个月排班
+      const previousSchedulesConverted = previousData.schedules.map(convertScheduleFromDTO);
+      setPreviousSchedules(previousSchedulesConverted);
+      setPreviousWorkDays(previousData.work_days || []);
+
       console.log('Data loaded from backend:', {
         employees: convertedEmployees.length,
         schedules: convertedSchedules.length,
-        workDays: data.work_days.length,
+        workDays: currentData.work_days.length,
       });
     } catch (err) {
       console.error('Failed to load init data:', err);
@@ -150,18 +174,15 @@ const App: React.FC = () => {
       setEmployees([]);
       setSchedules([]);
       setWorkDays([]);
+      setPreviousSchedules([]);
+      setPreviousWorkDays([]);
       setShowWorkDaySelector(true); // 👈 关键修改：失败时也显示选择器
     } finally {
       setIsLoading(false);
     }
-  }, [isBackendAvailable, selectedMonth, activeGroup, year, month]);
+  }, [isBackendAvailable, selectedMonth, previousMonth, activeGroup, year, month]);
 
-  // 月份或组别变化时重新加载数据
-  useEffect(() => {
-    loadInitData();
-    setLockedCells(new Set()); // 切换月份/组别时清空锁定
-    setBackupSchedules(null); // 清空备份
-  }, [selectedMonth, activeGroup, isBackendAvailable]);
+null
 
   // 设置首个工作日
   const handleSetFirstWorkDay = useCallback(async (firstWorkDay: number) => {
@@ -202,6 +223,28 @@ const App: React.FC = () => {
       setIsLoading(false);
     }
   }, [isBackendAvailable, selectedMonth, activeGroup, loadInitData]);
+
+  const scrollToBottom = useCallback(() => {
+    const container = matrixScrollRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, []);
+
+  const handleScroll = useCallback(() => {
+    const container = matrixScrollRef.current;
+    if (!container) return;
+    const tolerance = 6;
+    shouldStickToBottomRef.current = container.scrollTop + container.clientHeight >= container.scrollHeight - tolerance;
+  }, []);
+
+  useEffect(() => {
+    loadInitData();
+    setLockedCells(new Set());
+    setBackupSchedules(null);
+    shouldStickToBottomRef.current = true;
+  }, [selectedMonth, activeGroup, isBackendAvailable, loadInitData]);
+
+
 
   // ==========================================
   // 新增：统一调用后端校验的函数
@@ -373,6 +416,23 @@ const App: React.FC = () => {
     }
   }, [schedules, activeGroup, workDays, isBackendAvailable]);
 
+  const previousMonthSchedules = useMemo(() => {
+    if (isBackendAvailable && previousWorkDays.length > 0) {
+      return previousSchedules.filter(s => previousWorkDays.includes(s.date));
+    }
+    return previousSchedules.filter(s => s.date.startsWith(previousMonth));
+  }, [previousSchedules, previousWorkDays, previousMonth, isBackendAvailable]);
+
+  const combinedSchedules = useMemo(() => {
+    const merged = [...previousMonthSchedules, ...filteredSchedules];
+    return merged.sort((a, b) => a.date.localeCompare(b.date));
+  }, [previousMonthSchedules, filteredSchedules]);
+
+  useEffect(() => {
+    if (shouldStickToBottomRef.current) {
+      requestAnimationFrame(scrollToBottom);
+    }
+  }, [combinedSchedules, scrollToBottom]);
   const handleSwapShifts = useCallback((source: { date: string, empId: string }, target: { date: string, empId: string }) => {
     setSchedules(prev => {
       // 先在旧状态中找到源和目标记录
@@ -528,6 +588,38 @@ const App: React.FC = () => {
       return { ...s, records: mergedRecords };
     }));
   }, [employees, lockedCells]);
+
+  const findScheduleSource = useCallback((date: string): DailySchedule[] => {
+    if (date.startsWith(previousMonth)) {
+      return previousMonthSchedules;
+    }
+    return filteredSchedules;
+  }, [previousMonth, previousMonthSchedules, filteredSchedules]);
+
+  const handleUpdateShiftUnified = useCallback((date: string, empId: string, newType: ShiftType, label?: string) => {
+    if (date.startsWith(previousMonth)) {
+      return;
+    }
+    handleUpdateShift(date, empId, newType, label);
+  }, [handleUpdateShift, previousMonth]);
+
+  const handleSwapShiftsUnified = useCallback((source: { date: string, empId: string }, target: { date: string, empId: string }) => {
+    if (source.date.startsWith(previousMonth) || target.date.startsWith(previousMonth)) {
+      return;
+    }
+    handleSwapShifts(source, target);
+  }, [handleSwapShifts, previousMonth]);
+
+  const handleRescheduleRowUnified = useCallback((date: string) => {
+    if (date.startsWith(previousMonth)) {
+      return;
+    }
+    handleRescheduleRow(date);
+  }, [handleRescheduleRow, previousMonth]);
+
+  const handleApplySuggestionUnified = useCallback((suggestion: ConflictSuggestion) => {
+    handleApplySuggestion(suggestion);
+  }, [handleApplySuggestion]);
 
   // 切换单元格锁定状态
   const toggleCellLock = useCallback((date: string, empId: string) => {
@@ -906,33 +998,39 @@ const App: React.FC = () => {
         isBackendAvailable={isBackendAvailable}
       />
 
-      <main className="flex-1 overflow-auto custom-scrollbar p-4">
+      <main className="flex-1 overflow-hidden p-2">
         {isLoading ? (
           <div className="flex items-center justify-center h-full">
             <div className="text-lg text-gray-500">加载中...</div>
           </div>
         ) : (
-          <MatrixGrid
-            employees={employees}
-            onAddEmployee={handleAddEmployee}
-            onRemoveEmployee={handleRemoveEmployee}
-            onUpdateEmployeeName={handleUpdateEmployeeName}
-            schedules={filteredSchedules}
-            conflicts={conflicts}
-            onUpdateShift={handleUpdateShift}
-            onSwapShifts={handleSwapShifts}
-            onRescheduleRow={handleRescheduleRow}
-            onApplySuggestion={handleApplySuggestion}
-            showWorkDaySelector={showWorkDaySelector}
-            selectedMonth={selectedMonth}
-            onSetFirstWorkDay={handleSetFirstWorkDay}
-            lockedCells={lockedCells}
-            onToggleCellLock={toggleCellLock}
-            onLockRow={lockRow}
-            onUnlockRow={unlockRow}
-            onLockColumn={lockColumn}
-            onUnlockColumn={unlockColumn}
-          />
+          <div className="w-full h-full overflow-auto">
+            <div ref={matrixScrollRef} className="w-full h-full custom-scrollbar" onScroll={handleScroll}>
+              <MatrixGrid
+                employees={employees}
+                onAddEmployee={handleAddEmployee}
+                onRemoveEmployee={handleRemoveEmployee}
+                onUpdateEmployeeName={handleUpdateEmployeeName}
+                schedules={combinedSchedules}
+                conflicts={conflicts}
+                onUpdateShift={handleUpdateShiftUnified}
+                onSwapShifts={handleSwapShiftsUnified}
+                onRescheduleRow={handleRescheduleRowUnified}
+                onApplySuggestion={handleApplySuggestionUnified}
+                showWorkDaySelector={showWorkDaySelector}
+                selectedMonth={selectedMonth}
+                onSetFirstWorkDay={handleSetFirstWorkDay}
+                lockedCells={lockedCells}
+                onToggleCellLock={toggleCellLock}
+                onLockRow={lockRow}
+                onUnlockRow={unlockRow}
+                onLockColumn={lockColumn}
+                onUnlockColumn={unlockColumn}
+                compact
+                headerInsertIndex={previousMonthSchedules.length}
+              />
+            </div>
+          </div>
         )}
       </main>
 
