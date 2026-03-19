@@ -262,21 +262,24 @@ class SchedulingSolver:
             for day in self.work_days:
                 model.Add(sum(c[emp_id, day, shift] for shift in chief_shifts) <= 1)
 
-        # Constraint 6: Exactly 1 leader per night shift type per day
-        # This prevents multiple leaders from being in the same night shift,
-        # which the frontend detects as "multiple chiefs" (主任席冲突).
-        # With 6 leaders and 3 night shifts (each needing 1 leader),
-        # the remaining 3 leaders are assigned to DAY shift.
         # Constraint 6: 夜班长（主任）资格人员数量限制（硬约束）
+        sleep_chief_3_penalties = []  # 新增：记录睡觉班排了3个主任的情况，用于后续扣分
+        
         for day in self.work_days:
-            # 小夜和大夜：至少 1 名，最多 2 名
+            # 小夜和大夜：有且仅有 1 名主任（严苛硬约束）
             for shift in [ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]:
-                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) >= 1)
-                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) <= 2)
+                model.Add(sum(x[emp_id, day, shift] for emp_id in self.leader_ids) == 1)
             
-            # 睡觉班：至少 1 名，最多 3 名
-            model.Add(sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in self.leader_ids) >= 1)
-            model.Add(sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in self.leader_ids) <= 3)
+            # 睡觉班：至少 1 名，最多 3 名（硬约束放宽上限）
+            sleep_chiefs_expr = sum(x[emp_id, day, ShiftType.SLEEP] for emp_id in self.leader_ids)
+            model.Add(sleep_chiefs_expr >= 1)
+            model.Add(sleep_chiefs_expr <= 3)
+            
+            # 软约束打分标记：如果睡觉班排了 3 个主任，就把 has_3_sleep_chiefs 置为 1
+            has_3_sleep_chiefs = model.NewBoolVar(f'sleep_chief_3_{day}')
+            model.Add(sleep_chiefs_expr == 3).OnlyEnforceIf(has_3_sleep_chiefs)
+            model.Add(sleep_chiefs_expr < 3).OnlyEnforceIf(has_3_sleep_chiefs.Not())
+            sleep_chief_3_penalties.append(has_3_sleep_chiefs)
 
         # Constraint 7: Avoidance group members cannot be in the same shift (硬约束)
         # This guarantees zero avoidance conflicts in the generated schedule.
@@ -496,6 +499,7 @@ class SchedulingSolver:
             consecutive_weight * sum(consecutive_penalties)
             + 500 * sum(max_gap_penalties)
             + variance_weight * sum(deviations)
+            + 500 * sum(sleep_chief_3_penalties)  # 新增：一次扣 500 分，极力避免睡觉班排 3 个主任
             + sum(random_terms)
         )
 
