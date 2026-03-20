@@ -6,6 +6,7 @@ import { generateConflictSuggestion } from './conflictResolver';
 import MatrixHeader from './components/MatrixHeader';
 import MatrixGrid from './components/MatrixGrid';
 import MatrixFooter from './components/MatrixFooter';
+import SolverConvergenceLoading from './components/SolverConvergenceLoading';
 import {
   fetchInitData,
   autoGenerateSchedule,
@@ -1000,9 +1001,10 @@ null
 
       <main className="flex-1 overflow-hidden p-2">
         {isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-lg text-gray-500">加载中...</div>
-          </div>
+          <SolverConvergenceLoading
+            employeesCount={employees.length}
+            rowsCount={combinedSchedules.length}
+          />
         ) : (
           <div className="w-full h-full overflow-auto">
             <div ref={matrixScrollRef} className="w-full h-full custom-scrollbar" onScroll={handleScroll}>
