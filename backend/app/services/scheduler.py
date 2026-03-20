@@ -393,9 +393,12 @@ class SchedulingSolver:
             if emp_id != self.emp_ids[0]:  
                 day_max_gap = 3  
 
-                # 1. 白班跨月最小间隔：防连轴转，绝对底线，保持硬约束
+                # 1. 白班跨月最小间隔：防连轴转（包含休假后不能直接上白班），绝对底线
                 for i in range(total_days - 1):
-                    model.Add(get_x(emp_id, i, ShiftType.DAY) + get_x(emp_id, i + 1, ShiftType.DAY) <= 1)
+                    # 把前一天的 白班、休假、自定义、空班 全部视为“广义白班”
+                    yesterday_day_or_exempt = get_x(emp_id, i, ShiftType.DAY) + sum(get_x(emp_id, i, s) for s in exempt_shifts)
+                    # 如果昨天是“广义白班”，今天绝对不能排白班
+                    model.Add(yesterday_day_or_exempt + get_x(emp_id, i + 1, ShiftType.DAY) <= 1)
 
                 # 2. 白班跨月最大间隔（降级为软约束：排不开时重罚而不是死机）
                 window_size_max_day = day_max_gap + 1
@@ -560,15 +563,56 @@ class SchedulingSolver:
                 
                 dense_day_penalties.append(is_dense)
 
+        # =======================================================
+        # Constraint 11: 休假回归优先连排夜班（软约束奖励）
+        # 识别模式：昨天休假 + 今天夜班 + 明天夜班 -> 给予高分奖励
+        # =======================================================
+        post_vacation_night_rewards = []
+        for emp_id in self.emp_ids:
+            if len(self.emp_ids) > 0 and emp_id == self.emp_ids[0]:
+                continue  # 排除第一名员工（专属死规律）
+                
+            for i in range(len(self.work_days) - 1): # 至少需要评估到明天
+                idx = i + self.num_prev_days
+                if idx >= 1:
+                    # 昨天是休假/空班
+                    yesterday_exempt = sum(get_x(emp_id, idx - 1, s) for s in exempt_shifts)
+                    # 今天是夜班（包含睡、小夜、大夜）
+                    today_night = sum(get_x(emp_id, idx, s) for s in night_shifts)
+                    # 明天也是夜班
+                    tomorrow_night = sum(get_x(emp_id, idx + 1, s) for s in night_shifts)
+                    
+                    # 奖励逻辑：昨天休假 && 今天夜班 && 明天夜班
+                    reward_2_nights = model.NewBoolVar(f'post_vac_2n_{emp_id}_{i}')
+                    model.Add(reward_2_nights <= yesterday_exempt)
+                    model.Add(reward_2_nights <= today_night)
+                    model.Add(reward_2_nights <= tomorrow_night)
+                    model.Add(reward_2_nights >= yesterday_exempt + today_night + tomorrow_night - 2)
+                    
+                    # 连上2个夜班，给予 800 分的奖励（极具诱惑力，系统会拼命促成）
+                    post_vacation_night_rewards.append(800 * reward_2_nights)
+                    
+                    # 如果后天还能连上第 3 个夜班，再追加奖励
+                    if i + 2 < len(self.work_days):
+                        day_after_night = sum(get_x(emp_id, idx + 2, s) for s in night_shifts)
+                        reward_3_nights = model.NewBoolVar(f'post_vac_3n_{emp_id}_{i}')
+                        model.Add(reward_3_nights <= reward_2_nights) # 必须满足前置2个夜班的条件
+                        model.Add(reward_3_nights <= day_after_night)
+                        model.Add(reward_3_nights >= reward_2_nights + day_after_night - 1)
+                        
+                        # 连上3个夜班，再追加 500 分奖励（总计1300分）
+                        post_vacation_night_rewards.append(500 * reward_3_nights)        
+
         model.Minimize(
             consecutive_weight * sum(consecutive_penalties)
             + 10000 * sum(min_gap_penalties)
-            + 5000 * sum(max_gap_penalties)  # <--- 重罚！超过间隔一天扣5000分
+            + 5000 * sum(max_gap_penalties)  
             + variance_weight * sum(deviations)
             + 500 * sum(sleep_chief_3_penalties)
             + 2000 * sum(dense_day_penalties) 
             + sum(random_terms)
             - sum(day_shift_rewards) 
+            - sum(post_vacation_night_rewards) # <--- 新增这行：将休假连夜班的奖励兑现
         )
 
         # Solve

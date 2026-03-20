@@ -5,8 +5,8 @@
 import axios, { AxiosInstance, AxiosError, AxiosResponse } from 'axios';
 
 // API 基础URL - 从环境变量读取或使用默认值
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://101.37.203.158:8000';
-// const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
+// const BASE_URL = import.meta.env.VITE_API_URL || 'http://101.37.203.158:8000';
+const BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000';
 
 // 创建 Axios 实例
 const request: AxiosInstance = axios.create({
