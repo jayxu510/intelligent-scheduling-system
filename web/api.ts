@@ -1,7 +1,7 @@
 
 // const API_BASE_URL = 'http://101.37.203.158:8000';
-// const API_BASE_URL = 'http://101.37.203.158';
-const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL = 'http://101.37.203.158';
+// const API_BASE_URL = 'http://127.0.0.1:8000';
 
 // ==================== 后端 DTO 类型定义 ====================
 
