@@ -43,6 +43,8 @@ from app.models.schemas import (
     SetFirstWorkDayResponse,
     UpdateShiftRequest,
     UpdateShiftResponse,
+    ClearMonthScheduleRequest,
+    ClearMonthScheduleResponse,
 )
 from app.services.scheduler import SchedulingSolver
 from app.services.validator import validate_daily_schedule
@@ -60,6 +62,7 @@ from app.services.crud import (
     get_work_day_config,
     set_work_day_config,
     check_month_has_shifts,
+    clear_month_schedules,
 )
 from app.utils.date_utils import parse_month, get_work_days_in_month, get_day_of_week_cn, generate_work_days_from_first_day
 
@@ -481,6 +484,35 @@ async def update_shift(request: UpdateShiftRequest, db: Session = Depends(get_db
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
+
+
+@router.post("/schedule/clear-month", response_model=ClearMonthScheduleResponse)
+async def clear_month_schedule(request: ClearMonthScheduleRequest, db: Session = Depends(get_db)):
+    """
+    清空某月某组的全部排班
+
+    Args:
+        request: 包含月份和组别的请求
+        db: 数据库会话
+
+    Returns:
+        ClearMonthScheduleResponse: 清空结果
+    """
+    try:
+        deleted_count = clear_month_schedules(db, request.month, request.group_id)
+
+        # 同步清空该月首个工作日配置，确保用户下次需要重新选择
+        config_key = f"first_work_day_{request.month}_{request.group_id}"
+        db.query(SystemConfig).filter(SystemConfig.config_key == config_key).delete()
+        db.commit()
+
+        return ClearMonthScheduleResponse(
+            success=True,
+            message=f"成功清空 {request.month} {request.group_id}组排班，并重置首个工作日设置",
+            deleted_count=deleted_count,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Clear month schedule failed: {str(e)}")
 
 
 # ============================================

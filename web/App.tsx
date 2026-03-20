@@ -13,6 +13,7 @@ import {
   validateMonthSchedule,
   saveSchedule,
   updateShift,
+  clearMonthSchedule,
   downloadExcel,
   createEmployee as apiCreateEmployee,
   updateEmployee as apiUpdateEmployee,
@@ -932,6 +933,71 @@ null
     }
   }, [isBackendAvailable, selectedMonth, activeGroup, filteredSchedules]);
 
+  // 清空当月排班
+  const handleClearMonthSchedule = useCallback(async () => {
+    if (!isBackendAvailable) {
+      alert('后端服务不可用，无法清空排班');
+      return;
+    }
+
+    const confirmed = window.confirm(`确认清空 ${selectedMonth} ${activeGroup} 组的所有排班吗？此操作不可撤销。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await clearMonthSchedule({
+        month: selectedMonth,
+        group_id: activeGroup,
+      });
+
+      if (!result.success) {
+        throw new Error(result.message);
+      }
+
+      setSchedules(prev => prev.map(schedule => {
+        if (!schedule.date.startsWith(selectedMonth)) {
+          return schedule;
+        }
+
+        return {
+          ...schedule,
+          records: schedule.records.map(record => ({
+            ...record,
+            type: ShiftType.NONE,
+            label: undefined,
+            seatType: undefined,
+            isLocked: false,
+          })),
+        };
+      }));
+
+      setLockedCells(prev => {
+        const cleared = new Set<string>();
+        prev.forEach(cellKey => {
+          if (!cellKey.startsWith(selectedMonth)) {
+            cleared.add(cellKey);
+          }
+        });
+        return cleared;
+      });
+
+      setBackupSchedules(null);
+      setWorkDays([]);
+      setShowWorkDaySelector(true);
+      alert(`清空成功，已删除 ${result.deleted_count} 条排班记录，请重新设置首个工作日。`);
+    } catch (err) {
+      console.error('Clear month schedule failed:', err);
+      setError('清空当月排班失败');
+      alert('清空失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isBackendAvailable, selectedMonth, activeGroup]);
+
   // 导出 Excel
   const handleExportSchedule = useCallback(async () => {
     if (isBackendAvailable) {
@@ -992,6 +1058,7 @@ null
         selectedMonth={selectedMonth}
         onMonthChange={setSelectedMonth}
         onAutoSchedule={handleAutoScheduleAll}
+        onClearMonthSchedule={handleClearMonthSchedule}
         onSaveSchedule={handleSaveSchedule}
         onExportSchedule={handleExportSchedule}
         isLoading={isLoading}

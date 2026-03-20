@@ -77,6 +77,17 @@ export interface SaveScheduleResponse {
   saved_count: number;
 }
 
+export interface ClearMonthScheduleRequest {
+  month: string;
+  group_id: string;
+}
+
+export interface ClearMonthScheduleResponse {
+  success: boolean;
+  message: string;
+  deleted_count: number;
+}
+
 export interface UpdateShiftRequest {
   employee_id: number;
   date: string;
@@ -176,6 +187,19 @@ export async function updateShift(request: UpdateShiftRequest): Promise<UpdateSh
     body: JSON.stringify(request),
   });
   if (!response.ok) throw new Error(`Update shift failed: ${response.statusText}`);
+  return response.json();
+}
+
+/**
+ * 清空当前月份排班
+ */
+export async function clearMonthSchedule(request: ClearMonthScheduleRequest): Promise<ClearMonthScheduleResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/schedule/clear-month`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new Error(`Clear month schedule failed: ${response.statusText}`);
   return response.json();
 }
 

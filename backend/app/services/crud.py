@@ -324,3 +324,14 @@ def check_month_has_shifts(db: Session, year: int, month: int, group_id: str) ->
     """检查某月是否已有排班数据"""
     shifts = get_shifts_by_month(db, year, month, group_id)
     return len(shifts) > 0
+
+
+def clear_month_schedules(db: Session, month: str, group_id: str) -> int:
+    """清空某月某组的全部排班记录"""
+    year, month_num = map(int, month.split("-"))
+    from calendar import monthrange
+
+    start_date = date(year, month_num, 1)
+    end_date = date(year, month_num, monthrange(year, month_num)[1])
+
+    return delete_shifts_by_date_range(db, start_date, end_date, group_id)

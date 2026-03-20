@@ -7,6 +7,7 @@ interface MatrixHeaderProps {
   selectedMonth: string;
   onMonthChange: (val: string) => void;
   onAutoSchedule: () => void;
+  onClearMonthSchedule?: () => void;
   onSaveSchedule?: () => void;
   onExportSchedule?: () => void;
   onAddEmployee?: () => void;
@@ -18,7 +19,7 @@ interface MatrixHeaderProps {
 
 const MatrixHeader: React.FC<MatrixHeaderProps> = ({
   activeGroup, onGroupChange, selectedMonth, onMonthChange, onAutoSchedule,
-  onSaveSchedule, onExportSchedule, onAddEmployee, employeeCount = 0,
+  onClearMonthSchedule, onSaveSchedule, onExportSchedule, onAddEmployee, employeeCount = 0,
   isLoading, isSaving, isBackendAvailable
 }) => {
   const [showPicker, setShowPicker] = useState(false);
@@ -142,6 +143,17 @@ const MatrixHeader: React.FC<MatrixHeaderProps> = ({
               {isLoading ? 'sync' : 'auto_awesome'}
             </span>
             {isLoading ? '排班中...' : '智能一键排班'}
+          </button>
+
+          <button
+            onClick={onClearMonthSchedule}
+            disabled={isLoading || !isBackendAvailable}
+            className={`border border-red-500 text-red-500 hover:bg-red-500 hover:text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all active:scale-95 ${
+              (isLoading || !isBackendAvailable) ? 'opacity-50 cursor-not-allowed' : ''
+            }`}
+          >
+            <span className="material-icons text-sm">delete_sweep</span>
+            清空当月排班
           </button>
 
           <button

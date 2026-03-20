@@ -265,3 +265,16 @@ class UpdateShiftResponse(BaseModel):
     success: bool
     message: str
 
+
+class ClearMonthScheduleRequest(BaseModel):
+    """清空当月排班请求"""
+    month: str = Field(..., pattern=r"^\d{4}-\d{2}$", examples=["2024-10"])
+    group_id: str = Field(..., pattern=r"^[ABC]$", examples=["A"])
+
+
+class ClearMonthScheduleResponse(BaseModel):
+    """清空当月排班响应"""
+    success: bool
+    message: str
+    deleted_count: int
+
