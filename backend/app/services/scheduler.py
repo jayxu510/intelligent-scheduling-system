@@ -359,11 +359,38 @@ class SchedulingSolver:
         leader_ids_set = set(self.leader_ids) if hasattr(self, 'leader_ids') else set(self.emp_ids[:6])
         # (这里原本的 max_gap_penalties = [] 已经被删掉了)
 
+        # 小夜班间隔目标分布（来自样本：0:1,1:4,2:5,3:3,4:9,5:7,6:2,7:3,8:1）
+        # 这里按用户要求采用 1~8 天区间，并按概率分层设置惩罚权重（概率越高惩罚越低）
+        mini_gap_probabilities = {
+            1: 4 / 35,
+            2: 5 / 35,
+            3: 3 / 35,
+            4: 9 / 35,
+            5: 7 / 35,
+            6: 2 / 35,
+            7: 3 / 35,
+            8: 1 / 35,
+        }
+        mini_gap_weight_by_gap = {}
+        for gap, prob in mini_gap_probabilities.items():
+            if prob >= 0.20:        # 高概率区（4,5）
+                mini_gap_weight_by_gap[gap] = 200
+            elif prob >= 0.10:      # 次高概率区（1,2）
+                mini_gap_weight_by_gap[gap] = 500
+            elif prob >= 0.08:      # 中概率区（3,7）
+                mini_gap_weight_by_gap[gap] = 900
+            else:                   # 低概率区（6,8）
+                mini_gap_weight_by_gap[gap] = 1300
+
+        mini_gap_penalty_terms = []
+        mini_gap_gt_8_penalties = []
+        sleep_gap_penalty_terms = []
+
         for emp_id in self.emp_ids:
             is_leader = emp_id in leader_ids_set
 
             # --- 大夜班间隔 ---
-            late_min_gap = 3  
+            late_min_gap = 3
             late_max_gap = 5 if is_leader else 6
 
             # 1. 大夜班跨月最小间隔
@@ -374,7 +401,7 @@ class SchedulingSolver:
                 min_gap_violated = model.NewBoolVar(f'late_min_viol_{emp_id}_{i}')
                 model.Add(window_sum > 1).OnlyEnforceIf(min_gap_violated)
                 model.Add(window_sum <= 1).OnlyEnforceIf(min_gap_violated.Not())
-                
+
                 min_gap_penalties.append(min_gap_violated)
 
             # 2. 大夜班跨月最大间隔（降级为软约束：休假算作间隔，但排不开时重罚而不是死机）
@@ -382,16 +409,56 @@ class SchedulingSolver:
                 window_size_max_late = late_max_gap + 1
                 for i in range(total_days - window_size_max_late + 1):
                     window_sum = sum(get_x(emp_id, i + j, ShiftType.LATE_NIGHT) for j in range(window_size_max_late))
-                    
+
                     gap_violated = model.NewBoolVar(f'late_gap_viol_{emp_id}_{i}')
                     model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
                     model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
-                    
+
                     max_gap_penalties.append(gap_violated)
 
-            # --- 白班间隔 ---
+            # --- 小夜班间隔（按 1~8 天）---
+            # 修复 1：必须排除第一名员工（他不上小夜）
             if emp_id != self.emp_ids[0]:  
-                day_max_gap = 3  
+                
+                # 修复 2：将硬约束降级为软约束（防休假死机）。连续9天最好有1个小夜班，否则重罚。
+                for i in range(total_days - 8):
+                    window_sum = sum(get_x(emp_id, i + j, ShiftType.MINI_NIGHT) for j in range(9))
+                    gap_violated = model.NewBoolVar(f'mini_max_gap_viol_{emp_id}_{i}')
+                    model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
+                    model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
+                    mini_gap_gt_8_penalties.append(gap_violated)
+
+                # 2) 软约束：按样本概率分层权重，惩罚“相邻两次小夜班”的间隔类型
+                # （Cursor 写的这段逻辑不错，我们保留，只需要缩进一下）
+                for i in range(total_days - 1):
+                    for j in range(i + 1, total_days):
+                        gap = j - i
+                        is_next_mini_pair = model.NewBoolVar(f'mini_pair_{emp_id}_{i}_{j}')
+
+                        current_is_mini = get_x(emp_id, i, ShiftType.MINI_NIGHT)
+                        next_is_mini = get_x(emp_id, j, ShiftType.MINI_NIGHT)
+
+                        # 上界：必须两端都是小夜班
+                        model.Add(is_next_mini_pair <= current_is_mini)
+                        model.Add(is_next_mini_pair <= next_is_mini)
+
+                        # 上界：中间不能再出现小夜班（确保是“相邻两次小夜班”）
+                        for k in range(i + 1, j):
+                            model.Add(is_next_mini_pair <= 1 - get_x(emp_id, k, ShiftType.MINI_NIGHT))
+
+                        # 下界：两端是小夜班且中间都不是小夜班时，必须激活该变量
+                        middle_clear_terms = [1 - get_x(emp_id, k, ShiftType.MINI_NIGHT) for k in range(i + 1, j)]
+                        required_terms = [current_is_mini, next_is_mini] + middle_clear_terms
+                        model.Add(is_next_mini_pair >= sum(required_terms) - (len(required_terms) - 1))
+
+                        if 1 <= gap <= 8:
+                            mini_gap_penalty_terms.append(mini_gap_weight_by_gap[gap] * is_next_mini_pair)
+                        else:
+                            mini_gap_gt_8_penalties.append(is_next_mini_pair)
+
+            # --- 白班间隔 ---
+            if emp_id != self.emp_ids[0]:
+                day_max_gap = 3
 
                 # 1. 白班跨月最小间隔：防连轴转（包含休假后不能直接上白班），绝对底线
                 for i in range(total_days - 1):
@@ -404,17 +471,56 @@ class SchedulingSolver:
                 window_size_max_day = day_max_gap + 1
                 for i in range(total_days - window_size_max_day + 1):
                     window_sum = sum(get_x(emp_id, i + j, ShiftType.DAY) for j in range(window_size_max_day))
-                    
+
                     gap_violated = model.NewBoolVar(f'day_gap_viol_{emp_id}_{i}')
                     model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
                     model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
-                    
+
                     max_gap_penalties.append(gap_violated)
 
+            # ==========================================
+            # --- 睡觉班专属间隔惩罚（软约束） ---
+            # ==========================================
+            if emp_id != self.emp_ids[0]:
+                # 1. 间隔 6 天及以上重罚（任何连续 6 天没有睡觉班，每天扣 1000 分）
+                window_size_sleep = 6
+                for i in range(total_days - window_size_sleep + 1):
+                    window_sum = sum(get_x(emp_id, i + j, ShiftType.SLEEP) for j in range(window_size_sleep))
+                    gap_violated = model.NewBoolVar(f'sleep_max_gap_viol_{emp_id}_{i}')
+                    model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
+                    model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
+                    sleep_gap_penalty_terms.append(1000 * gap_violated)
+
+                # 2. 间隔 1~5 天的分层扣分（删除了 0 天的情况）
+                sleep_gap_weights = {1: 100, 2: 0, 3: 100, 4: 300, 5: 300}
+                for i in range(total_days - 1):
+                    # j 是下一次上睡觉班的位置，最多往后扫描 6 天（即对应 gap=5）
+                    for j in range(i + 1, min(i + 7, total_days)): 
+                        gap = (j - i) - 1  # 算出中间隔了几天
+                        weight = sleep_gap_weights.get(gap, 0)
+                        
+                        if weight > 0:
+                            is_next_sleep = model.NewBoolVar(f'sleep_pair_{emp_id}_{i}_{j}')
+                            current_is_sleep = get_x(emp_id, i, ShiftType.SLEEP)
+                            next_is_sleep = get_x(emp_id, j, ShiftType.SLEEP)
+
+                            # 上界：两端必须都是睡觉班
+                            model.Add(is_next_sleep <= current_is_sleep)
+                            model.Add(is_next_sleep <= next_is_sleep)
+                            
+                            # 上界：中间不能再出现睡觉班
+                            for k in range(i + 1, j):
+                                model.Add(is_next_sleep <= 1 - get_x(emp_id, k, ShiftType.SLEEP))
+                                
+                            # 下界：两端是睡觉班且中间没有，就必须激活扣分
+                            middle_clear = [1 - get_x(emp_id, k, ShiftType.SLEEP) for k in range(i + 1, j)]
+                            req = [current_is_sleep, next_is_sleep] + middle_clear
+                            model.Add(is_next_sleep >= sum(req) - (len(req) - 1))
+                            
+                            sleep_gap_penalty_terms.append(weight * is_next_sleep)        
+
+        
         # Constraint 8: 尽量避免所有班次连续（软约束）
-        # 对每个员工、每对相邻工作日、每种班次类型：
-        # 如果同一人连续两天上同一种班，产生惩罚。
-        # 权重极高(1000)，求解器会优先消除连续，实在排不开才允许。
         consecutive_penalties = []
         for emp_id in self.emp_ids:
             for i in range(len(self.work_days) - 1):
@@ -564,60 +670,48 @@ class SchedulingSolver:
                 dense_day_penalties.append(is_dense)
 
         # =======================================================
-        # Constraint 11: 休假回归优先连排夜班（软约束奖励）
-        # 识别模式：昨天休假 + 今天夜班 + 明天夜班 -> 给予高分奖励
+        # Constraint 11: 休假回归后“孤立夜班”封杀令（五万分虚拟硬约束）
+        # 规则：休假回来如果上了夜班，第二天必须也是夜班，坚决杜绝“只上1个夜班”
         # =======================================================
-        post_vacation_night_rewards = []
+        isolated_night_penalties = []
         for emp_id in self.emp_ids:
             if len(self.emp_ids) > 0 and emp_id == self.emp_ids[0]:
-                continue  # 排除第一名员工（专属死规律）
+                continue  # 排除第一名员工的死规律
                 
-            for i in range(len(self.work_days) - 1): # 至少需要评估到明天
+            for i in range(len(self.work_days) - 1): 
                 idx = i + self.num_prev_days
                 if idx >= 1:
-                    # 昨天是休假/空班
+                    # 抓取连续三天的状态
                     yesterday_exempt = sum(get_x(emp_id, idx - 1, s) for s in exempt_shifts)
-                    # 今天是夜班（包含睡、小夜、大夜）
                     today_night = sum(get_x(emp_id, idx, s) for s in night_shifts)
-                    # 明天也是夜班
                     tomorrow_night = sum(get_x(emp_id, idx + 1, s) for s in night_shifts)
                     
-                    # 奖励逻辑：昨天休假 && 今天夜班 && 明天夜班
-                    reward_2_nights = model.NewBoolVar(f'post_vac_2n_{emp_id}_{i}')
-                    model.Add(reward_2_nights <= yesterday_exempt)
-                    model.Add(reward_2_nights <= today_night)
-                    model.Add(reward_2_nights <= tomorrow_night)
-                    model.Add(reward_2_nights >= yesterday_exempt + today_night + tomorrow_night - 2)
+                    # 核心数学逻辑：如果昨天休假(1) + 今天夜班(1)，那么明天夜班必须为 1
+                    # 如果明天没排夜班，is_violation 就会被迫变成 1，触发天价罚款
+                    is_violation = model.NewBoolVar(f'isolated_night_{emp_id}_{i}')
+                    model.Add(tomorrow_night + is_violation >= yesterday_exempt + today_night - 1)
                     
-                    # 连上2个夜班，给予 800 分的奖励（极具诱惑力，系统会拼命促成）
-                    post_vacation_night_rewards.append(800 * reward_2_nights)
-                    
-                    # 如果后天还能连上第 3 个夜班，再追加奖励
-                    if i + 2 < len(self.work_days):
-                        day_after_night = sum(get_x(emp_id, idx + 2, s) for s in night_shifts)
-                        reward_3_nights = model.NewBoolVar(f'post_vac_3n_{emp_id}_{i}')
-                        model.Add(reward_3_nights <= reward_2_nights) # 必须满足前置2个夜班的条件
-                        model.Add(reward_3_nights <= day_after_night)
-                        model.Add(reward_3_nights >= reward_2_nights + day_after_night - 1)
-                        
-                        # 连上3个夜班，再追加 500 分奖励（总计1300分）
-                        post_vacation_night_rewards.append(500 * reward_3_nights)        
+                    isolated_night_penalties.append(is_violation)        
 
         model.Minimize(
             consecutive_weight * sum(consecutive_penalties)
+            + 50000 * sum(isolated_night_penalties) # <--- 新增：发现休假后只上1个夜班，重罚五万分！
             + 10000 * sum(min_gap_penalties)
-            + 5000 * sum(max_gap_penalties)  
+            + 5000 * sum(max_gap_penalties)
+            + sum(mini_gap_penalty_terms)           # 小夜班 1~8 天分层惩罚
+            + 12000 * sum(mini_gap_gt_8_penalties) # 小夜班超过 8 天重罚
+            + sum(sleep_gap_penalty_terms)         # <--- 新增：睡觉班间隔动态惩罚
             + variance_weight * sum(deviations)
             + 500 * sum(sleep_chief_3_penalties)
-            + 2000 * sum(dense_day_penalties) 
+            + 2000 * sum(dense_day_penalties)
             + sum(random_terms)
-            - sum(day_shift_rewards) 
-            - sum(post_vacation_night_rewards) # <--- 新增这行：将休假连夜班的奖励兑现
+            - sum(day_shift_rewards)
+            # (之前的 - sum(post_vacation_night_rewards) 记得删掉)
         )
 
         # Solve
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 120.0
+        solver.parameters.max_time_in_seconds = 30.0
         # 每次求解使用不同的随机种子，生成不同的排班方案
         solver.parameters.random_seed = random.randint(0, 2**31 - 1)
         status = solver.Solve(model)

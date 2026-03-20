@@ -33,32 +33,15 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
   const [cellState, setCellState] = useState<ShiftVisual[]>(() =>
     Array.from({ length: totalCells }, () => pickRandomShift())
   );
-  const [lockedCells, setLockedCells] = useState<Set<number>>(new Set());
   const [comboCount, setComboCount] = useState(14205);
   const [displayProgress, setDisplayProgress] = useState(0);
 
-  const lockCursorRef = useRef(0);
-  const lockOrderRef = useRef<number[]>([]);
   const countRef = useRef(14205);
 
   useEffect(() => {
-    const order = Array.from({ length: totalCells }, (_, idx) => idx).sort((a, b) => {
-      const rowA = Math.floor(a / employeeCols);
-      const colA = a % employeeCols;
-      const rowB = Math.floor(b / employeeCols);
-      const colB = b % employeeCols;
-
-      const scoreA = rowA * 3 + colA + Math.random() * 1.5;
-      const scoreB = rowB * 3 + colB + Math.random() * 1.5;
-      return scoreA - scoreB;
-    });
-
-    lockOrderRef.current = order;
-    lockCursorRef.current = 0;
-    setLockedCells(new Set());
     setDisplayProgress(0);
     setCellState(Array.from({ length: totalCells }, () => pickRandomShift()));
-  }, [totalCells, employeeCols]);
+  }, [totalCells]);
 
   useEffect(() => {
     const flickerTimer = window.setInterval(() => {
@@ -66,7 +49,6 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
         const next = [...prev];
 
         for (let i = 0; i < totalCells; i += 1) {
-          if (lockedCells.has(i)) continue;
           if (Math.random() < 0.82) {
             next[i] = pickRandomShift();
           }
@@ -77,28 +59,7 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
     }, 130);
 
     return () => window.clearInterval(flickerTimer);
-  }, [lockedCells, totalCells]);
-
-  useEffect(() => {
-    const lockTimer = window.setInterval(() => {
-      setLockedCells(prev => {
-        if (prev.size >= totalCells) return prev;
-
-        const next = new Set(prev);
-        const progress = next.size / Math.max(1, totalCells);
-        const batch = Math.max(4, Math.floor(employeeCols * (0.4 + progress * 1.2)));
-
-        for (let i = 0; i < batch && lockCursorRef.current < lockOrderRef.current.length; i += 1) {
-          next.add(lockOrderRef.current[lockCursorRef.current]);
-          lockCursorRef.current += 1;
-        }
-
-        return next;
-      });
-    }, 1500);
-
-    return () => window.clearInterval(lockTimer);
-  }, [employeeCols, totalCells]);
+  }, [totalCells]);
 
   useEffect(() => {
     let rafId = 0;
@@ -108,8 +69,7 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
       const dt = now - last;
       last = now;
 
-      const lockRatio = lockedCells.size / Math.max(1, totalCells);
-      const speed = 220 + (1 - lockRatio) * 950;
+      const speed = 980;
       countRef.current += Math.floor((dt / 1000) * speed);
 
       setComboCount(countRef.current);
@@ -118,22 +78,22 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, [lockedCells.size, totalCells]);
+  }, []);
 
   useEffect(() => {
-    const durationMs = 120000;
+    const durationMs = 30000;
     const start = performance.now();
 
     const timer = window.setInterval(() => {
       const elapsed = performance.now() - start;
       const linear = Math.min(1, elapsed / durationMs);
 
-      // 先快后慢的收敛曲线：在 2 分钟左右逼近并到达 99%
+      // 约 30 秒推进至 99%，前快后慢的视觉曲线
       const eased = 1 - Math.pow(1 - linear, 1.25);
       const next = Math.min(99, Math.floor(eased * 99));
 
       setDisplayProgress(next);
-    }, 250);
+    }, 120);
 
     return () => window.clearInterval(timer);
   }, []);
@@ -166,17 +126,13 @@ const SolverConvergenceLoading: React.FC<SolverConvergenceLoadingProps> = ({
               {Array.from({ length: employeeCols }).map((__, colIdx) => {
                 const index = rowIdx * employeeCols + colIdx;
                 const shift = cellState[index] || SHIFT_VISUALS[0];
-                const isLocked = lockedCells.has(index);
-
                 return (
                   <div
                     key={`cell-${rowIdx}-${colIdx}`}
                     className="flex items-center justify-center border-r border-b border-cyan-500/10"
                   >
                     <div
-                      className={`h-5 w-11 rounded-md text-[10px] font-black leading-5 text-center transition-all duration-150 ${shift.className} ${
-                        isLocked ? 'opacity-95 shadow-[0_0_0_1px_rgba(15,23,42,0.22)]' : 'opacity-90'
-                      }`}
+                      className={`h-5 w-11 rounded-md text-[10px] font-black leading-5 text-center transition-all duration-150 ${shift.className} opacity-90`}
                     >
                       {shift.label}
                     </div>
