@@ -131,6 +131,30 @@ export interface SetFirstWorkDayResponse {
   config_key: string;
 }
 
+export interface LockedAssignmentDTO {
+  id: number;
+  employee_id: number;
+  date: string;
+  shift_type: string;
+  lock_reason: string | null;
+  created_at: string;
+}
+
+export interface LockBatchUpsertRequest {
+  start_date: string;
+  end_date: string;
+  locks: Array<{
+    employee_id: number;
+    date: string;
+    shift_type: string;
+  }>;
+}
+
+export interface LockBatchUpsertResponse {
+  success: boolean;
+  upserted_count: number;
+}
+
 // ==================== API 函数 ====================
 
 /**
@@ -276,6 +300,28 @@ export async function setFirstWorkDay(request: SetFirstWorkDayRequest): Promise<
     body: JSON.stringify(request),
   });
   if (!response.ok) throw new Error(`Set first work day failed: ${response.statusText}`);
+  return response.json();
+}
+
+/**
+ * 获取锁定单元格
+ */
+export async function fetchLocks(startDate: string, endDate: string): Promise<LockedAssignmentDTO[]> {
+  const response = await fetch(`${API_BASE_URL}/api/locks?start_date=${startDate}&end_date=${endDate}`);
+  if (!response.ok) throw new Error(`Fetch locks failed: ${response.statusText}`);
+  return response.json();
+}
+
+/**
+ * 批量保存锁定单元格
+ */
+export async function saveLocksBatch(request: LockBatchUpsertRequest): Promise<LockBatchUpsertResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/locks/batch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) throw new Error(`Save locks batch failed: ${response.statusText}`);
   return response.json();
 }
 
