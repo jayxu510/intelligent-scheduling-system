@@ -495,12 +495,65 @@ class SchedulingSolver:
                     if coeff > 0:
                         random_terms.append(coeff * x[emp_id, day, shift])
 
+        # =======================================================
+        # Constraint 9: 白班分配优先级（疲劳释放软约束）
+        # 优先让刚上了夜班的人上白班。近期夜班越多，分配白班的奖励分越高。
+        # 利用 get_x 完美支持跨月疲劳度的追溯！
+        # =======================================================
+        day_shift_rewards = []
+        night_shifts = [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]
+
+        for emp_id in self.emp_ids:
+            if len(self.emp_ids) > 0 and emp_id == self.emp_ids[0]:  
+                continue  # 排除第一名员工（他有专属的死规律）
+                
+            for i in range(len(self.work_days)):
+                day_idx = i + self.num_prev_days
+                is_day = x[emp_id, self.work_days[i], ShiftType.DAY]
+
+                # 往前看 1 到 4 天，采用十进制级联权重，严格按夜班数量与连续性排名
+                for lookback, weight in [(1, 1000), (2, 100), (3, 10), (4, 1)]:
+                    if day_idx - lookback >= 0:
+                        # 提取前几天是否上了夜班（支持跨月读取）
+                        n_lookback = sum(get_x(emp_id, day_idx - lookback, s) for s in night_shifts)
+                        
+                        # 数学逻辑：只有当 “前几天上了夜班(n_lookback)” 且 “今天排了白班(is_day)” 都成立时，才触发奖励
+                        and_var = model.NewBoolVar(f'day_reward_{emp_id}_{i}_{lookback}')
+                        model.Add(and_var <= is_day)
+                        model.Add(and_var <= n_lookback)
+                        model.Add(and_var >= is_day + n_lookback - 1)
+                        
+                        day_shift_rewards.append(weight * and_var)
+        
+        # =======================================================
+        # Constraint 10: 防止白班过于密集（终结“白-夜-白-夜-白”振荡现象）
+        # 扫描跨月的任何连续 5 天窗口，如果白班达到 3 个，给予极其严厉的重罚
+        # =======================================================
+        dense_day_penalties = []
+        for emp_id in self.emp_ids:
+            if len(self.emp_ids) > 0 and emp_id == self.emp_ids[0]:
+                continue  # 排除第一名员工
+            
+            # total_days 包含了上个月历史，所以这同样是一个无缝跨月的防密集校验
+            for i in range(total_days - 4):
+                # 获取这 5 天滑动窗口内的白班总数
+                window_days_sum = sum(get_x(emp_id, i + j, ShiftType.DAY) for j in range(5))
+                
+                is_dense = model.NewBoolVar(f'dense_day_{emp_id}_{i}')
+                # 核心逻辑：如果这 5 天里白班 >= 3 个，is_dense 就为 1（触发重罚）
+                model.Add(window_days_sum >= 3).OnlyEnforceIf(is_dense)
+                model.Add(window_days_sum < 3).OnlyEnforceIf(is_dense.Not())
+                
+                dense_day_penalties.append(is_dense)
+
         model.Minimize(
             consecutive_weight * sum(consecutive_penalties)
             + 500 * sum(max_gap_penalties)
             + variance_weight * sum(deviations)
-            + 500 * sum(sleep_chief_3_penalties)  # 新增：一次扣 500 分，极力避免睡觉班排 3 个主任
+            + 500 * sum(sleep_chief_3_penalties)
+            + 2000 * sum(dense_day_penalties)  # <--- 新增：2000分的防密集重罚，强制切断连续振荡
             + sum(random_terms)
+            - sum(day_shift_rewards) 
         )
 
         # Solve
