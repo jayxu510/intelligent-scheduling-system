@@ -278,3 +278,33 @@ class ClearMonthScheduleResponse(BaseModel):
     message: str
     deleted_count: int
 
+
+class LockedAssignmentCreate(BaseModel):
+    """锁定记录创建/更新数据"""
+    employee_id: int
+    date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", examples=["2024-10-15"])
+    shift_type: str
+
+
+class LockedAssignmentResponse(BaseModel):
+    """锁定记录响应"""
+    id: int
+    employee_id: int
+    date: str
+    shift_type: str
+
+
+class LockBatchUpsertRequest(BaseModel):
+    """批量锁定保存请求（支持全量替换）"""
+    start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$")
+    locks: list[LockedAssignmentCreate] = Field(default_factory=list)
+
+
+class LockBatchUpsertResponse(BaseModel):
+    """批量锁定保存响应"""
+    success: bool
+    message: str
+    deleted_count: int
+    upserted_count: int
+

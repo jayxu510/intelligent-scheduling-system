@@ -14,6 +14,8 @@ import {
   saveSchedule,
   updateShift,
   clearMonthSchedule,
+  fetchLocks,
+  saveLocksBatch,
   downloadExcel,
   createEmployee as apiCreateEmployee,
   updateEmployee as apiUpdateEmployee,
@@ -241,10 +243,31 @@ null
 
   useEffect(() => {
     loadInitData();
-    setLockedCells(new Set());
     setBackupSchedules(null);
     shouldStickToBottomRef.current = true;
   }, [selectedMonth, activeGroup, isBackendAvailable, loadInitData]);
+
+  useEffect(() => {
+    if (!isBackendAvailable) {
+      setLockedCells(new Set());
+      return;
+    }
+
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const monthStart = `${selectedMonth}-01`;
+    const monthEnd = `${selectedMonth}-${new Date(y, m, 0).getDate().toString().padStart(2, '0')}`;
+
+    fetchLocks(monthStart, monthEnd)
+      .then(rows => {
+        const restored = new Set<string>(rows.map(item => `${item.date}-${item.employee_id}`));
+        setLockedCells(restored);
+      })
+      .catch(err => {
+        console.error('加载锁定状态失败:', err);
+        setError('加载锁定状态失败');
+        setLockedCells(new Set());
+      });
+  }, [isBackendAvailable, selectedMonth]);
 
 
 
@@ -623,6 +646,48 @@ null
     handleApplySuggestion(suggestion);
   }, [handleApplySuggestion]);
 
+  const persistMonthLocks = useCallback(async (nextLockedCells: Set<string>) => {
+    if (!isBackendAvailable) {
+      return;
+    }
+
+    const [y, m] = selectedMonth.split('-').map(Number);
+    const startDate = `${selectedMonth}-01`;
+    const endDate = `${selectedMonth}-${new Date(y, m, 0).getDate().toString().padStart(2, '0')}`;
+
+    const shiftMap = new Map<string, ShiftType>();
+    schedules.forEach(schedule => {
+      if (!schedule.date.startsWith(selectedMonth)) return;
+      schedule.records.forEach(record => {
+        shiftMap.set(`${schedule.date}-${record.employeeId}`, record.type);
+      });
+    });
+
+    const locks = Array.from(nextLockedCells)
+      .filter(key => key.startsWith(selectedMonth))
+      .map(key => {
+        const [date, employeeId] = key.split('-').length > 3
+          ? [key.slice(0, 10), key.slice(11)]
+          : [key.split('-').slice(0, 3).join('-'), key.split('-').slice(3).join('-')];
+        return {
+          employee_id: parseInt(employeeId),
+          date,
+          shift_type: (shiftMap.get(key) || ShiftType.NONE) as string,
+        };
+      });
+
+    try {
+      await saveLocksBatch({
+        start_date: startDate,
+        end_date: endDate,
+        locks,
+      });
+    } catch (err) {
+      console.error('保存锁定状态失败:', err);
+      setError('保存锁定状态失败');
+    }
+  }, [isBackendAvailable, selectedMonth, schedules]);
+
   // 切换单元格锁定状态
   const toggleCellLock = useCallback((date: string, empId: string) => {
     const cellKey = `${date}-${empId}`;
@@ -633,103 +698,191 @@ null
       } else {
         newSet.add(cellKey);
       }
+      persistMonthLocks(newSet);
       return newSet;
     });
 
-    // 更新 ShiftRecord 的 isLocked 属性
     setSchedules(prev => prev.map(s => {
       if (s.date !== date) return s;
       return {
         ...s,
-        records: s.records.map(r => {
-          if (r.employeeId === empId) {
-            const cellKey = `${date}-${empId}`;
-            const isLocked = !lockedCells.has(cellKey);
-            return { ...r, isLocked };
-          }
-          return r;
-        })
+        records: s.records.map(r =>
+          r.employeeId === empId ? { ...r, isLocked: !lockedCells.has(cellKey) } : r
+        )
       };
     }));
-  }, [lockedCells]);
+  }, [lockedCells, persistMonthLocks]);
 
   // 锁定整行
   const lockRow = useCallback((date: string) => {
     setLockedCells(prev => {
       const newSet = new Set(prev);
-      employees.forEach(emp => {
-        newSet.add(`${date}-${emp.id}`);
-      });
+      employees.forEach(emp => newSet.add(`${date}-${emp.id}`));
+      persistMonthLocks(newSet);
       return newSet;
     });
 
-    // 更新 ShiftRecord 的 isLocked 属性
     setSchedules(prev => prev.map(s => {
       if (s.date !== date) return s;
-      return {
-        ...s,
-        records: s.records.map(r => ({ ...r, isLocked: true }))
-      };
+      return { ...s, records: s.records.map(r => ({ ...r, isLocked: true })) };
     }));
-  }, [employees]);
+  }, [employees, persistMonthLocks]);
 
   // 解锁整行
   const unlockRow = useCallback((date: string) => {
     setLockedCells(prev => {
       const newSet = new Set(prev);
-      employees.forEach(emp => {
-        newSet.delete(`${date}-${emp.id}`);
-      });
+      employees.forEach(emp => newSet.delete(`${date}-${emp.id}`));
+      persistMonthLocks(newSet);
       return newSet;
     });
 
-    // 更新 ShiftRecord 的 isLocked 属性
     setSchedules(prev => prev.map(s => {
       if (s.date !== date) return s;
-      return {
-        ...s,
-        records: s.records.map(r => ({ ...r, isLocked: false }))
-      };
+      return { ...s, records: s.records.map(r => ({ ...r, isLocked: false })) };
     }));
-  }, [employees]);
+  }, [employees, persistMonthLocks]);
 
   // 锁定整列
   const lockColumn = useCallback((empId: string) => {
     setLockedCells(prev => {
       const newSet = new Set(prev);
-      schedules.forEach(schedule => {
-        newSet.add(`${schedule.date}-${empId}`);
-      });
+      schedules.forEach(schedule => newSet.add(`${schedule.date}-${empId}`));
+      persistMonthLocks(newSet);
       return newSet;
     });
 
-    // 更新 ShiftRecord 的 isLocked 属性
     setSchedules(prev => prev.map(s => ({
       ...s,
-      records: s.records.map(r =>
-        r.employeeId === empId ? { ...r, isLocked: true } : r
-      )
+      records: s.records.map(r => r.employeeId === empId ? { ...r, isLocked: true } : r)
     })));
-  }, [schedules]);
+  }, [schedules, persistMonthLocks]);
 
   // 解锁整列
   const unlockColumn = useCallback((empId: string) => {
     setLockedCells(prev => {
       const newSet = new Set(prev);
-      schedules.forEach(schedule => {
-        newSet.delete(`${schedule.date}-${empId}`);
-      });
+      schedules.forEach(schedule => newSet.delete(`${schedule.date}-${empId}`));
+      persistMonthLocks(newSet);
       return newSet;
     });
 
-    // 更新 ShiftRecord 的 isLocked 属性
     setSchedules(prev => prev.map(s => ({
       ...s,
-      records: s.records.map(r =>
-        r.employeeId === empId ? { ...r, isLocked: false } : r
-      )
+      records: s.records.map(r => r.employeeId === empId ? { ...r, isLocked: false } : r)
     })));
-  }, [schedules]);
+  }, [schedules, persistMonthLocks]);
+
+  // 清空整行排班
+  const handleClearRow = useCallback(async (date: string) => {
+    const confirmed = window.confirm(`确认清空 ${date} 这一天的整行排班吗？`);
+    if (!confirmed) {
+      return;
+    }
+
+    setSchedules(prev => prev.map(s => {
+      if (s.date !== date) return s;
+      return {
+        ...s,
+        records: s.records.map(r => ({
+          ...r,
+          type: ShiftType.NONE,
+          label: undefined,
+          seatType: undefined,
+          isLocked: false,
+        })),
+      };
+    }));
+
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      employees.forEach(emp => newSet.delete(`${date}-${emp.id}`));
+      return newSet;
+    });
+
+    if (isBackendAvailable) {
+      try {
+        await Promise.all(
+          employees.map(emp =>
+            updateShift({
+              employee_id: parseInt(emp.id),
+              date,
+              shift_type: ShiftType.NONE,
+              group_id: activeGroup,
+              seat_type: null,
+              label: null,
+            })
+          )
+        );
+      } catch (err) {
+        console.error('Clear row failed:', err);
+        setError('清空整行后保存失败，请稍后重试');
+      }
+    }
+  }, [employees, isBackendAvailable, activeGroup]);
+
+  // 清空整列排班（当前选择月份）
+  const handleClearColumn = useCallback(async (empId: string, empName: string) => {
+    const confirmed = window.confirm(`确认清空【${empName}】在 ${selectedMonth} 的整列排班吗？`);
+    if (!confirmed) {
+      return;
+    }
+
+    const targetDates = schedules
+      .filter(s => s.date.startsWith(selectedMonth))
+      .map(s => s.date);
+
+    setSchedules(prev => prev.map(s => {
+      if (!s.date.startsWith(selectedMonth)) return s;
+      return {
+        ...s,
+        records: s.records.map(r =>
+          r.employeeId === empId
+            ? {
+                ...r,
+                type: ShiftType.NONE,
+                label: undefined,
+                seatType: undefined,
+                isLocked: false,
+              }
+            : r
+        ),
+      };
+    }));
+
+    setLockedCells(prev => {
+      const newSet = new Set(prev);
+      targetDates.forEach(date => newSet.delete(`${date}-${empId}`));
+      return newSet;
+    });
+
+    if (isBackendAvailable) {
+      try {
+        await Promise.all(
+          targetDates.map(date =>
+            updateShift({
+              employee_id: parseInt(empId),
+              date,
+              shift_type: ShiftType.NONE,
+              group_id: activeGroup,
+              seat_type: null,
+              label: null,
+            })
+          )
+        );
+      } catch (err) {
+        console.error('Clear column failed:', err);
+        setError('清空整列后保存失败，请稍后重试');
+      }
+    }
+  }, [selectedMonth, schedules, isBackendAvailable, activeGroup]);
+
+  const handleClearRowUnified = useCallback((date: string) => {
+    if (date.startsWith(previousMonth)) {
+      return;
+    }
+    handleClearRow(date);
+  }, [handleClearRow, previousMonth]);
 
   // 一键优化（保留锁定的单元格，只优化当日及以后）
   const handleOptimizeSchedule = useCallback(async () => {
@@ -1095,6 +1248,8 @@ null
                 onUnlockRow={unlockRow}
                 onLockColumn={lockColumn}
                 onUnlockColumn={unlockColumn}
+                onClearRow={handleClearRowUnified}
+                onClearColumn={handleClearColumn}
                 compact
                 headerInsertIndex={previousMonthSchedules.length}
               />

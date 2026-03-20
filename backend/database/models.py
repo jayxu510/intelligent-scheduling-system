@@ -30,6 +30,7 @@ class Employee(Base):
 
     # 关联关系
     shifts = relationship("Shift", back_populates="employee", cascade="all, delete-orphan")
+    locked_assignments = relationship("LockedAssignment", back_populates="employee", cascade="all, delete-orphan")
     avoidance_rule = relationship("AvoidanceRule", back_populates="employees")
 
     __table_args__ = (
@@ -87,6 +88,30 @@ class AvoidanceRule(Base):
 
     __table_args__ = (
         {"comment": "避让规则表"}
+    )
+
+
+class LockedAssignment(Base):
+    """
+    锁定排班表
+    独立存储被锁定的单元格，避免排班重写时丢失
+    """
+    __tablename__ = "locked_assignments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True, comment="锁定记录ID")
+    employee_id = Column(Integer, ForeignKey("employees.id", ondelete="CASCADE"), nullable=False, comment="员工ID")
+    date = Column(Date, nullable=False, comment="锁定日期")
+    shift_type = Column(String(20), nullable=False, comment="锁定班次类型")
+    created_at = Column(DateTime, default=datetime.now, comment="创建时间")
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, comment="更新时间")
+
+    employee = relationship("Employee", back_populates="locked_assignments")
+
+    __table_args__ = (
+        UniqueConstraint("employee_id", "date", name="uq_locked_assignment_employee_date"),
+        Index("idx_locked_assignment_date", "date"),
+        Index("idx_locked_assignment_employee", "employee_id"),
+        {"comment": "锁定排班表"},
     )
 
 

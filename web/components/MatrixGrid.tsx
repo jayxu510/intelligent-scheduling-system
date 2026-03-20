@@ -22,6 +22,8 @@ interface MatrixGridProps {
   onUnlockRow?: (date: string) => void;
   onLockColumn?: (empId: string) => void;
   onUnlockColumn?: (empId: string) => void;
+  onClearRow?: (date: string) => void;
+  onClearColumn?: (empId: string, empName: string) => void;
   readOnly?: boolean;
   compact?: boolean;
   headerInsertIndex?: number;
@@ -74,6 +76,8 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
   onUnlockRow,
   onLockColumn,
   onUnlockColumn,
+  onClearRow,
+  onClearColumn,
   readOnly = false,
   compact = false,
   headerInsertIndex
@@ -257,15 +261,25 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
                           )}
                           {/* 锁定/解锁整列按钮 */}
                           {!readOnly && (
-                            <button
-                              onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
-                              className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
-                              title={isColumnLocked ? "解锁整列" : "锁定整列"}
-                            >
-                              <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
-                                {isColumnLocked ? 'lock' : 'lock_open'}
-                              </span>
-                            </button>
+                            <>
+                              <button
+                                onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
+                                className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
+                                title={isColumnLocked ? "解锁整列" : "锁定整列"}
+                              >
+                                <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
+                                  {isColumnLocked ? 'lock' : 'lock_open'}
+                                </span>
+                              </button>
+
+                              <button
+                                onClick={() => onClearColumn?.(emp.id, emp.name)}
+                                className="absolute bottom-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
+                                title="清空整列排班"
+                              >
+                                <span className="material-icons text-[12px]">delete_sweep</span>
+                              </button>
+                            </>
                           )}
                         </div>
                       </div>
@@ -315,15 +329,25 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
                             </button>
                           )}
                           {!readOnly && (
-                            <button
-                              onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
-                              className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
-                              title={isColumnLocked ? "解锁整列" : "锁定整列"}
-                            >
-                              <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
-                                {isColumnLocked ? 'lock' : 'lock_open'}
-                              </span>
-                            </button>
+                            <>
+                              <button
+                                onClick={() => isColumnLocked ? onUnlockColumn?.(emp.id) : onLockColumn?.(emp.id)}
+                                className="absolute bottom-0 left-1/2 -translate-x-1/2 transition-all"
+                                title={isColumnLocked ? "解锁整列" : "锁定整列"}
+                              >
+                                <span className={`material-icons text-[12px] ${isColumnLocked ? 'text-green-600' : 'text-slate-400 hover:text-green-600'}`}>
+                                  {isColumnLocked ? 'lock' : 'lock_open'}
+                                </span>
+                              </button>
+
+                              <button
+                                onClick={() => onClearColumn?.(emp.id, emp.name)}
+                                className="absolute bottom-0 right-0 p-0.5 opacity-0 group-hover:opacity-100 text-red-400 hover:text-red-600 transition-all"
+                                title="清空整列排班"
+                              >
+                                <span className="material-icons text-[12px]">delete_sweep</span>
+                              </button>
+                            </>
                           )}
                         </div>
                       </div>
@@ -493,17 +517,26 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
               })}
 
               <div
-                className="border-b border-slate-200 dark:border-slate-800 flex items-center justify-center"
+                className="border-b border-slate-200 dark:border-slate-800 flex items-center justify-center gap-1"
                 style={{ height: rowHeight }}
               >
                 {!rowReadOnly && (
-                  <button 
-                    onClick={() => onRescheduleRow(schedule.date)}
-                    className="p-1 rounded bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-primary hover:text-white transition-all shadow-sm border border-slate-200 dark:border-slate-700"
-                    title="重新生成该日排班"
-                  >
-                    <span className="material-icons text-[14px]">refresh</span>
-                  </button>
+                  <>
+                    <button
+                      onClick={() => onRescheduleRow(schedule.date)}
+                      className="p-1 rounded bg-slate-50 dark:bg-slate-800 text-slate-400 hover:bg-primary hover:text-white transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                      title="重新生成该日排班"
+                    >
+                      <span className="material-icons text-[14px]">refresh</span>
+                    </button>
+                    <button
+                      onClick={() => onClearRow?.(schedule.date)}
+                      className="p-1 rounded bg-slate-50 dark:bg-slate-800 text-red-400 hover:bg-red-500 hover:text-white transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                      title="清空整行排班"
+                    >
+                      <span className="material-icons text-[14px]">delete_sweep</span>
+                    </button>
+                  </>
                 )}
               </div>
 

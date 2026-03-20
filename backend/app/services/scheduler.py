@@ -189,11 +189,9 @@ class SchedulingSolver:
                         self.first_emp_offset = 2                
 
     def solve(self) -> tuple[list[DailySchedule], dict]:
-        """Solve the scheduling problem.
-
-        Returns:
-            Tuple of (schedules, statistics)
-        """
+        """Solve the scheduling problem."""
+        
+        
         model = cp_model.CpModel()
 
         # Decision variables: x[emp_id, day, shift_type] = 1 if assigned
@@ -335,8 +333,6 @@ class SchedulingSolver:
                         model.Add(x[emp_id, day, shift] == 0)
 
         # Constraint 7.7: 同一人连续夜班不超过3个（硬约束，无缝跨月）
-
-        # Constraint 7.7: 同一人连续夜班不超过3个（硬约束，无缝跨月）
         night_shifts = [ShiftType.SLEEP, ShiftType.MINI_NIGHT, ShiftType.LATE_NIGHT]
         for emp_id in self.emp_ids:
             for i in range(total_days - 3):
@@ -347,14 +343,21 @@ class SchedulingSolver:
                 ]
                 model.Add(sum(four_day_nights) <= 3)
 
-        # Constraint 7.75: 保底大夜班约束（硬约束）兜底
+        # --- 修复报错：提前在这里初始化列表 ---
+        max_gap_penalties = [] 
+        min_gap_penalties = [] # <--- 新增这行，用来装最小间隔的扣分
+
+        # Constraint 7.75: 保底大夜班约束（降级为软约束，防死机）
         for emp_id in self.emp_ids:
             if emp_id != self.emp_ids[0]:  
-                model.Add(sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) >= 1)
+                no_late_night = model.NewBoolVar(f'no_late_night_{emp_id}')
+                model.Add(sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) == 0).OnlyEnforceIf(no_late_night)
+                model.Add(sum(x[emp_id, day, ShiftType.LATE_NIGHT] for day in self.work_days) >= 1).OnlyEnforceIf(no_late_night.Not())
+                max_gap_penalties.append(no_late_night)  # 借用下方惩罚分，违规一次重罚
 
-        # Constraint 7.8: 班次间隔约束（硬约束，无缝跨月，含“休假跳过”豁免）
+        # Constraint 7.8: 班次间隔约束
         leader_ids_set = set(self.leader_ids) if hasattr(self, 'leader_ids') else set(self.emp_ids[:6])
-        max_gap_penalties = [] # 留空以防下文报错
+        # (这里原本的 max_gap_penalties = [] 已经被删掉了)
 
         for emp_id in self.emp_ids:
             is_leader = emp_id in leader_ids_set
@@ -367,32 +370,43 @@ class SchedulingSolver:
             window_size_min_late = late_min_gap + 1
             for i in range(total_days - window_size_min_late + 1):
                 window_sum = sum(get_x(emp_id, i + j, ShiftType.LATE_NIGHT) for j in range(window_size_min_late))
-                model.Add(window_sum <= 1)
+                # 如果这个 4 天窗口里出现 2 个大夜班（即只隔了 1~2 天），触发惩罚
+                min_gap_violated = model.NewBoolVar(f'late_min_viol_{emp_id}_{i}')
+                model.Add(window_sum > 1).OnlyEnforceIf(min_gap_violated)
+                model.Add(window_sum <= 1).OnlyEnforceIf(min_gap_violated.Not())
+                
+                min_gap_penalties.append(min_gap_violated)
 
-            # 2. 大夜班跨月最大间隔（含休假豁免）
+            # 2. 大夜班跨月最大间隔（降级为软约束：休假算作间隔，但排不开时重罚而不是死机）
             if emp_id != self.emp_ids[0]:
                 window_size_max_late = late_max_gap + 1
                 for i in range(total_days - window_size_max_late + 1):
                     window_sum = sum(get_x(emp_id, i + j, ShiftType.LATE_NIGHT) for j in range(window_size_max_late))
-                    # 统计该窗口内的休假等豁免班次数量
-                    exempt_sum = sum(get_x(emp_id, i + j, shift) for j in range(window_size_max_late) for shift in exempt_shifts)
-                    # 只要发生休假(exempt_sum >= 1)，规则自动满足，完美跳过断档！
-                    model.Add(window_sum + exempt_sum >= 1)
+                    
+                    gap_violated = model.NewBoolVar(f'late_gap_viol_{emp_id}_{i}')
+                    model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
+                    model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
+                    
+                    max_gap_penalties.append(gap_violated)
 
             # --- 白班间隔 ---
             if emp_id != self.emp_ids[0]:  
                 day_max_gap = 3  
 
-                # 1. 白班跨月最小间隔：绝对不允许连上白班
+                # 1. 白班跨月最小间隔：防连轴转，绝对底线，保持硬约束
                 for i in range(total_days - 1):
                     model.Add(get_x(emp_id, i, ShiftType.DAY) + get_x(emp_id, i + 1, ShiftType.DAY) <= 1)
 
-                # 2. 白班跨月最大间隔（含休假豁免）
+                # 2. 白班跨月最大间隔（降级为软约束：排不开时重罚而不是死机）
                 window_size_max_day = day_max_gap + 1
                 for i in range(total_days - window_size_max_day + 1):
                     window_sum = sum(get_x(emp_id, i + j, ShiftType.DAY) for j in range(window_size_max_day))
-                    exempt_sum = sum(get_x(emp_id, i + j, shift) for j in range(window_size_max_day) for shift in exempt_shifts)
-                    model.Add(window_sum + exempt_sum >= 1)
+                    
+                    gap_violated = model.NewBoolVar(f'day_gap_viol_{emp_id}_{i}')
+                    model.Add(window_sum == 0).OnlyEnforceIf(gap_violated)
+                    model.Add(window_sum >= 1).OnlyEnforceIf(gap_violated.Not())
+                    
+                    max_gap_penalties.append(gap_violated)
 
         # Constraint 8: 尽量避免所有班次连续（软约束）
         # 对每个员工、每对相邻工作日、每种班次类型：
@@ -548,17 +562,18 @@ class SchedulingSolver:
 
         model.Minimize(
             consecutive_weight * sum(consecutive_penalties)
-            + 500 * sum(max_gap_penalties)
+            + 10000 * sum(min_gap_penalties)
+            + 5000 * sum(max_gap_penalties)  # <--- 重罚！超过间隔一天扣5000分
             + variance_weight * sum(deviations)
             + 500 * sum(sleep_chief_3_penalties)
-            + 2000 * sum(dense_day_penalties)  # <--- 新增：2000分的防密集重罚，强制切断连续振荡
+            + 2000 * sum(dense_day_penalties) 
             + sum(random_terms)
             - sum(day_shift_rewards) 
         )
 
         # Solve
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 1800.0
+        solver.parameters.max_time_in_seconds = 120.0
         # 每次求解使用不同的随机种子，生成不同的排班方案
         solver.parameters.random_seed = random.randint(0, 2**31 - 1)
         status = solver.Solve(model)

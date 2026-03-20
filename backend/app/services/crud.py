@@ -11,7 +11,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from database.models import Employee, Shift, AvoidanceRule, SystemConfig
+from database.models import Employee, Shift, AvoidanceRule, SystemConfig, LockedAssignment
 
 
 # ============================================
@@ -335,3 +335,58 @@ def clear_month_schedules(db: Session, month: str, group_id: str) -> int:
     end_date = date(year, month_num, monthrange(year, month_num)[1])
 
     return delete_shifts_by_date_range(db, start_date, end_date, group_id)
+
+
+# ============================================
+# 锁定排班 CRUD
+# ============================================
+
+def get_locked_assignments_by_date_range(db: Session, start_date: date, end_date: date) -> list[LockedAssignment]:
+    """获取指定日期范围内的锁定记录"""
+    return db.query(LockedAssignment).filter(
+        and_(LockedAssignment.date >= start_date, LockedAssignment.date <= end_date)
+    ).all()
+
+
+def upsert_locked_assignments_batch(db: Session, locks: list[dict]) -> int:
+    """
+    批量幂等写入锁定记录（同 employee_id + date 覆盖 shift_type）
+    返回实际写入/更新条数
+    """
+    affected = 0
+    for item in locks:
+        employee_id = item["employee_id"]
+        lock_date = datetime.strptime(item["date"], "%Y-%m-%d").date() if isinstance(item["date"], str) else item["date"]
+        shift_type = item["shift_type"]
+
+        existing = db.query(LockedAssignment).filter(
+            and_(LockedAssignment.employee_id == employee_id, LockedAssignment.date == lock_date)
+        ).first()
+
+        if existing:
+            if existing.shift_type != shift_type:
+                existing.shift_type = shift_type
+                affected += 1
+        else:
+            db.add(LockedAssignment(employee_id=employee_id, date=lock_date, shift_type=shift_type))
+            affected += 1
+
+    db.commit()
+    return affected
+
+
+def replace_locked_assignments_by_date_range(db: Session, start_date: date, end_date: date, locks: list[dict]) -> dict:
+    """
+    用指定列表替换某个日期区间内的全部锁定记录。
+    这是前端“提交全量当前月锁定状态”最稳妥的幂等实现。
+    """
+    # 先删除区间内旧记录
+    deleted = db.query(LockedAssignment).filter(
+        and_(LockedAssignment.date >= start_date, LockedAssignment.date <= end_date)
+    ).delete(synchronize_session=False)
+    db.commit()
+
+    # 再插入新记录
+    inserted = upsert_locked_assignments_batch(db, locks) if locks else 0
+    return {"deleted_count": deleted, "upserted_count": inserted}
+

@@ -45,6 +45,10 @@ from app.models.schemas import (
     UpdateShiftResponse,
     ClearMonthScheduleRequest,
     ClearMonthScheduleResponse,
+    LockedAssignmentCreate,
+    LockedAssignmentResponse,
+    LockBatchUpsertRequest,
+    LockBatchUpsertResponse,
 )
 from app.services.scheduler import SchedulingSolver
 from app.services.validator import validate_daily_schedule
@@ -63,6 +67,8 @@ from app.services.crud import (
     set_work_day_config,
     check_month_has_shifts,
     clear_month_schedules,
+    get_locked_assignments_by_date_range,
+    replace_locked_assignments_by_date_range,
 )
 from app.utils.date_utils import parse_month, get_work_days_in_month, get_day_of_week_cn, generate_work_days_from_first_day
 
@@ -513,6 +519,56 @@ async def clear_month_schedule(request: ClearMonthScheduleRequest, db: Session =
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Clear month schedule failed: {str(e)}")
+
+
+@router.get("/locks", response_model=list[LockedAssignmentResponse])
+async def get_locks(start_date: str, end_date: str, db: Session = Depends(get_db)):
+    """获取日期区间内的锁定排班记录"""
+    try:
+      start = datetime.strptime(start_date, "%Y-%m-%d").date()
+      end = datetime.strptime(end_date, "%Y-%m-%d").date()
+      rows = get_locked_assignments_by_date_range(db, start, end)
+      return [
+          LockedAssignmentResponse(
+              id=row.id,
+              employee_id=row.employee_id,
+              date=row.date.strftime("%Y-%m-%d"),
+              shift_type=row.shift_type,
+          )
+          for row in rows
+      ]
+    except Exception as e:
+      raise HTTPException(status_code=500, detail=f"Get locks failed: {str(e)}")
+
+
+@router.post("/locks/batch", response_model=LockBatchUpsertResponse)
+async def upsert_locks_batch(request: LockBatchUpsertRequest, db: Session = Depends(get_db)):
+    """
+    批量幂等保存锁定状态。
+    语义：用 request.locks 替换 [start_date, end_date] 区间内的全部锁定记录。
+    """
+    try:
+      start = datetime.strptime(request.start_date, "%Y-%m-%d").date()
+      end = datetime.strptime(request.end_date, "%Y-%m-%d").date()
+
+      payload = [
+          {
+              "employee_id": item.employee_id,
+              "date": item.date,
+              "shift_type": item.shift_type,
+          }
+          for item in request.locks
+      ]
+
+      result = replace_locked_assignments_by_date_range(db, start, end, payload)
+      return LockBatchUpsertResponse(
+          success=True,
+          message="锁定状态保存成功",
+          deleted_count=result["deleted_count"],
+          upserted_count=result["upserted_count"],
+      )
+    except Exception as e:
+      raise HTTPException(status_code=500, detail=f"Save locks failed: {str(e)}")
 
 
 # ============================================
