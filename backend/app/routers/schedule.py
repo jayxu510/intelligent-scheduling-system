@@ -52,7 +52,7 @@ from app.models.schemas import (
 )
 from app.services.scheduler import SchedulingSolver
 from app.services.validator import validate_daily_schedule
-from app.services.exporter import export_schedule_to_excel
+from app.services.exporter import export_schedule_to_excel, export_multi_month_schedule_to_excel
 from app.services.crud import (
     get_all_employees,
     get_all_avoidance_rules,
@@ -1031,94 +1031,114 @@ async def get_work_days(month: str, group_id: str, db: Session = Depends(get_db)
 # ============================================
 
 @router.get("/export")
-async def export_schedule_get(month: str, group_id: str, db: Session = Depends(get_db)):
+async def export_schedule_get(
+    month: str | None = None,
+    months: str | None = None,
+    group_id: str = "A",
+    db: Session = Depends(get_db)
+):
     """
     导出排班表到 Excel 文件（GET 方式）
 
-    从数据库读取排班数据并生成 Excel 文件流
-
-    Args:
-        month: 月份，格式 YYYY-MM
-        group_id: 组别 A/B/C
-        db: 数据库会话
-
-    Returns:
-        Excel 文件流
+    支持：
+    - 单月导出：month=YYYY-MM
+    - 多月导出：months=YYYY-MM,YYYY-MM,...
     """
     try:
-        # 解析月份
-        year, month_num = parse_month(month)
-
-        # 获取当前组的员工
-        employees_db = db.query(EmployeeModel).filter(
-            EmployeeModel.group_id == group_id
-        ).order_by(EmployeeModel.sequence_order).all()
-        employees = [
-            Employee(
-                id=str(emp.id),
-                name=emp.name,
-                role=EmployeeRole.LEADER if emp.is_night_leader else EmployeeRole.STAFF,
-                avoidance_group_id=str(emp.avoidance_group_id) if emp.avoidance_group_id else None
-            )
-            for emp in employees_db
-        ]
-
-        # 获取排班数据
-        shifts_db = get_shifts_by_month(db, year, month_num, group_id)
-
-        # 组织排班数据
-        first_work_day_config = get_work_day_config(db, month, group_id)
-        if first_work_day_config:
-            first_day = int(first_work_day_config)
-            work_days = generate_work_days_from_first_day(year, month_num, first_day)
+        # 兼容旧参数：如果没传 months，则使用 month
+        month_list: list[str] = []
+        if months and months.strip():
+            month_list = [m.strip() for m in months.split(",") if m.strip()]
+        elif month and month.strip():
+            month_list = [month.strip()]
         else:
-            work_days = get_work_days_in_month(year, month_num, group_id)
-        schedules_dict = {}
+            raise HTTPException(status_code=400, detail="month or months is required")
 
-        for shift in shifts_db:
-            date_str = shift.date.strftime("%Y-%m-%d")
-            if date_str not in schedules_dict:
-                schedules_dict[date_str] = {
-                    "date": date_str,
-                    "day_of_week": get_day_of_week_cn(date_str),
-                    "records": []
-                }
-            schedules_dict[date_str]["records"].append(
-                ShiftRecord(
-                    employee_id=str(shift.employee_id),
-                    date=date_str,
-                    shift_type=shift.shift_type,
-                    slot_type=shift.seat_type
+        # 去重并排序
+        month_list = sorted(list(dict.fromkeys(month_list)))
+
+        month_schedules: dict[str, list[DailySchedule]] = {}
+        month_employees: dict[str, list[Employee]] = {}
+
+        for month_item in month_list:
+            year, month_num = parse_month(month_item)
+
+            employees_db = db.query(EmployeeModel).filter(
+                EmployeeModel.group_id == group_id
+            ).order_by(EmployeeModel.sequence_order).all()
+            employees = [
+                Employee(
+                    id=str(emp.id),
+                    name=emp.name,
+                    role=EmployeeRole.LEADER if emp.is_night_leader else EmployeeRole.STAFF,
+                    avoidance_group_id=str(emp.avoidance_group_id) if emp.avoidance_group_id else None
                 )
-            )
+                for emp in employees_db
+            ]
+            month_employees[month_item] = employees
 
-        # 构建完整的排班列表
-        schedules = []
-        for work_day in work_days:
-            if work_day in schedules_dict:
-                data = schedules_dict[work_day]
-                schedules.append(DailySchedule(
-                    date=data["date"],
-                    day_of_week=data["day_of_week"],
-                    records=data["records"]
-                ))
+            shifts_db = get_shifts_by_month(db, year, month_num, group_id)
+
+            first_work_day_config = get_work_day_config(db, month_item, group_id)
+            if first_work_day_config:
+                first_day = int(first_work_day_config)
+                work_days = generate_work_days_from_first_day(year, month_num, first_day)
             else:
-                # 空排班
-                schedules.append(DailySchedule(
-                    date=work_day,
-                    day_of_week=get_day_of_week_cn(work_day),
-                    records=[]
-                ))
+                work_days = get_work_days_in_month(year, month_num, group_id)
 
-        # 生成 Excel
-        buffer = export_schedule_to_excel(
-            month=month,
-            group_id=group_id,
-            schedules=schedules,
-            employees=employees
-        )
+            schedules_dict = {}
+            for shift in shifts_db:
+                date_str = shift.date.strftime("%Y-%m-%d")
+                if date_str not in schedules_dict:
+                    schedules_dict[date_str] = {
+                        "date": date_str,
+                        "day_of_week": get_day_of_week_cn(date_str),
+                        "records": []
+                    }
+                schedules_dict[date_str]["records"].append(
+                    ShiftRecord(
+                        employee_id=str(shift.employee_id),
+                        date=date_str,
+                        shift_type=shift.shift_type,
+                        slot_type=shift.seat_type
+                    )
+                )
 
-        filename = f"schedule_{month}_{group_id}.xlsx"
+            schedules = []
+            for work_day in work_days:
+                if work_day in schedules_dict:
+                    data = schedules_dict[work_day]
+                    schedules.append(DailySchedule(
+                        date=data["date"],
+                        day_of_week=data["day_of_week"],
+                        records=data["records"]
+                    ))
+                else:
+                    schedules.append(DailySchedule(
+                        date=work_day,
+                        day_of_week=get_day_of_week_cn(work_day),
+                        records=[]
+                    ))
+
+            month_schedules[month_item] = schedules
+
+        # 单月保持原输出，多月则一个文件多 sheet
+        if len(month_list) == 1:
+            only_month = month_list[0]
+            buffer = export_schedule_to_excel(
+                month=only_month,
+                group_id=group_id,
+                schedules=month_schedules[only_month],
+                employees=month_employees[only_month]
+            )
+            filename = f"schedule_{only_month}_{group_id}.xlsx"
+        else:
+            buffer = export_multi_month_schedule_to_excel(
+                group_id=group_id,
+                month_schedules=month_schedules,
+                month_employees=month_employees,
+            )
+            filename = f"schedule_{month_list[0]}_to_{month_list[-1]}_{group_id}.xlsx"
 
         return StreamingResponse(
             buffer,
@@ -1126,5 +1146,7 @@ async def export_schedule_get(month: str, group_id: str, db: Session = Depends(g
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")

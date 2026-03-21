@@ -108,6 +108,13 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
     return `${prevYear}-${prevMonth}`;
   }, [selectedMonth]);
 
+  const selectedMonthLabel = React.useMemo(() => {
+    if (!selectedMonth) return '--月';
+    const month = Number(selectedMonth.split('-')[1] || 0);
+    if (!month || Number.isNaN(month)) return '--月';
+    return `${month}月`;
+  }, [selectedMonth]);
+
   const handleDaySelect = (day: number) => {
     setSelectedDay(day);
     if (onSetFirstWorkDay) {
@@ -219,10 +226,12 @@ const MatrixGrid: React.FC<MatrixGridProps> = ({
               {index === insertHeaderIndex && (
                 <>
                   <div
-                    className="sticky top-0 z-50 bg-slate-100 dark:bg-slate-800 border-y border-r border-slate-200 dark:border-slate-700 flex items-center justify-center text-[12px] font-black text-slate-700 dark:text-slate-200"
+                    className="sticky top-0 z-50 bg-gradient-to-br from-cyan-500 to-blue-600 border-y border-r border-cyan-300/50 dark:border-cyan-700 flex items-center justify-center"
                     style={{ height: headerHeight }}
                   >
-                    {selectedMonth}
+                    <span className="text-[18px] leading-none font-black tracking-wide text-white drop-shadow-[0_2px_8px_rgba(15,23,42,0.45)]">
+                      {selectedMonthLabel}
+                    </span>
                   </div>
                   {primaryEmployees.map((emp, idx) => {
                     // 检查该列是否全部锁定（只统计可编辑行）

@@ -1151,12 +1151,84 @@ null
     }
   }, [isBackendAvailable, selectedMonth, activeGroup]);
 
-  // 导出 Excel
-  const handleExportSchedule = useCallback(async () => {
+  // 清空当月未锁定排班
+  const handleClearUnlockedMonthSchedule = useCallback(async () => {
+    if (!isBackendAvailable) {
+      alert('后端服务不可用，无法清空排班');
+      return;
+    }
+
+    const confirmed = window.confirm(`确认清空 ${selectedMonth} ${activeGroup} 组当月所有未锁定的排班吗？已锁定单元格将保留。`);
+    if (!confirmed) {
+      return;
+    }
+
+    const monthSchedules = schedules.filter(s => s.date.startsWith(selectedMonth));
+    const unlockedRecords = monthSchedules.flatMap(schedule =>
+      schedule.records.filter(record => !lockedCells.has(`${schedule.date}-${record.employeeId}`))
+    );
+
+    if (unlockedRecords.length === 0) {
+      alert('当月没有可清空的未锁定排班');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      await Promise.all(
+        unlockedRecords.map(record =>
+          updateShift({
+            employee_id: parseInt(record.employeeId),
+            date: record.date,
+            shift_type: ShiftType.NONE,
+            group_id: activeGroup,
+            seat_type: null,
+            label: null,
+          })
+        )
+      );
+
+      setSchedules(prev => prev.map(schedule => {
+        if (!schedule.date.startsWith(selectedMonth)) {
+          return schedule;
+        }
+
+        return {
+          ...schedule,
+          records: schedule.records.map(record => {
+            const isLocked = lockedCells.has(`${schedule.date}-${record.employeeId}`);
+            if (isLocked) {
+              return record;
+            }
+            return {
+              ...record,
+              type: ShiftType.NONE,
+              label: undefined,
+              seatType: undefined,
+              isLocked: false,
+            };
+          }),
+        };
+      }));
+
+      alert(`清空成功，已清空 ${unlockedRecords.length} 个未锁定单元格排班`);
+    } catch (err) {
+      console.error('Clear unlocked month schedule failed:', err);
+      setError('清空当月未锁定排班失败');
+      alert('清空失败，请重试');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isBackendAvailable, selectedMonth, activeGroup, schedules, lockedCells]);
+
+  // 导出 Excel（支持多月）
+  const handleExportSchedule = useCallback(async (months: string[]) => {
     if (isBackendAvailable) {
       try {
         setIsLoading(true);
-        await downloadExcel(selectedMonth, activeGroup);
+        await downloadExcel(months, activeGroup);
       } catch (err) {
         console.error('Export failed:', err);
         setError('导出失败');
@@ -1167,7 +1239,7 @@ null
     } else {
       alert('后端服务不可用，无法导出');
     }
-  }, [isBackendAvailable, selectedMonth, activeGroup]);
+  }, [isBackendAvailable, activeGroup]);
 
 
 
@@ -1212,6 +1284,7 @@ null
         onMonthChange={setSelectedMonth}
         onAutoSchedule={handleAutoScheduleAll}
         onClearMonthSchedule={handleClearMonthSchedule}
+        onClearUnlockedMonthSchedule={handleClearUnlockedMonthSchedule}
         onSaveSchedule={handleSaveSchedule}
         onExportSchedule={handleExportSchedule}
         isLoading={isLoading}

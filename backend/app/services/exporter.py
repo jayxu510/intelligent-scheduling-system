@@ -11,25 +11,146 @@ from app.models.schemas import (
     DailySchedule,
 )
 
-
-# Color scheme for shift types
-SHIFT_COLORS = {
-    ShiftType.DAY: "FFF3E0",        # Light orange
-    ShiftType.SLEEP: "E3F2FD",       # Light blue
-    ShiftType.MINI_NIGHT: "F3E5F5",  # Light purple
-    ShiftType.LATE_NIGHT: "FCE4EC",  # Light pink
-    ShiftType.VACATION: "E8F5E9",    # Light green
-    ShiftType.NONE: "FAFAFA",        # Light gray
+# 模板样式（按用户给的 Excel 解析）
+# 白班：黄；大夜：蓝；小夜：白底；睡觉：白底；其他：绿
+SHIFT_FILLS = {
+    "DAY": PatternFill(start_color="FFFED961", end_color="FFFED961", fill_type="solid"),
+    "LATE_NIGHT": PatternFill(start_color="FF5B9BD5", end_color="FF5B9BD5", fill_type="solid"),
+    "VACATION": PatternFill(start_color="FF75BD42", end_color="FF75BD42", fill_type="solid"),
+    "OTHER": PatternFill(start_color="FFD9D9D9", end_color="FFD9D9D9", fill_type="solid"),
+    "NONE": PatternFill(fill_type=None),
 }
 
-SHIFT_LABELS = {
-    ShiftType.DAY: "白",
-    ShiftType.SLEEP: "睡",
-    ShiftType.MINI_NIGHT: "小夜",
-    ShiftType.LATE_NIGHT: "大夜",
-    ShiftType.VACATION: "休",
-    ShiftType.NONE: "",
-}
+CENTER_ALIGN = Alignment(horizontal="center", vertical="center")
+THIN_BORDER = Border(
+    left=Side(style="thin"),
+    right=Side(style="thin"),
+    top=Side(style="thin"),
+    bottom=Side(style="thin"),
+)
+
+
+def _normalize_shift_type(value: str | ShiftType | None) -> str:
+    if value is None:
+        return "NONE"
+    if isinstance(value, ShiftType):
+        return value.value
+    return str(value)
+
+
+def _get_display_text(shift_type: str, label: str | None) -> str:
+    if label:
+        return label
+
+    mapping = {
+        "DAY": "白班",
+        "SLEEP": "睡觉",
+        "MINI_NIGHT": "小夜",
+        "LATE_NIGHT": "大夜",
+        "VACATION": "休假",
+        "CUSTOM": "其他",
+        "NONE": "",
+    }
+    return mapping.get(shift_type, "其他")
+
+
+def _get_fill_by_value(shift_type: str, text: str) -> PatternFill:
+    if shift_type == "DAY":
+        return SHIFT_FILLS["DAY"]
+    if shift_type == "LATE_NIGHT":
+        return SHIFT_FILLS["LATE_NIGHT"]
+    if shift_type in ("VACATION",):
+        return SHIFT_FILLS["VACATION"]
+    if shift_type in ("SLEEP", "MINI_NIGHT", "NONE"):
+        return SHIFT_FILLS["NONE"]
+
+    if "白班" in text:
+        return SHIFT_FILLS["DAY"]
+    if "大夜" in text:
+        return SHIFT_FILLS["LATE_NIGHT"]
+    if "休" in text or "假" in text or "培训" in text or "出差" in text:
+        return SHIFT_FILLS["VACATION"]
+    if "小夜" in text or "睡" in text:
+        return SHIFT_FILLS["NONE"]
+    return SHIFT_FILLS["OTHER"]
+
+
+def _apply_row_base_style(ws, row_idx: int, max_col: int = 19):
+    for col in range(1, max_col + 1):
+        c = ws.cell(row=row_idx, column=col)
+        c.alignment = CENTER_ALIGN
+        c.border = THIN_BORDER
+        c.font = Font(name="宋体", size=11, color="FF000000")
+
+
+def _write_month_block(
+    ws,
+    start_row: int,
+    month: str,
+    group_id: str,
+    schedules: list[DailySchedule],
+    employees: list[Employee],
+) -> int:
+    """在单个工作表中写入一个月份块，返回下一个可写入行号。"""
+
+    # 月份标题行
+    title_cell = ws.cell(row=start_row, column=1, value=f"{month} {group_id}组")
+    title_cell.font = Font(name="宋体", size=12, bold=True)
+    title_cell.alignment = CENTER_ALIGN
+
+    header_row = start_row + 1
+
+    # 表头布局：A=日期，B~G + I~S 员工列，H 为空白分隔列
+    ws.cell(row=header_row, column=1, value="日期")
+
+    left_count = min(6, len(employees))
+    employee_columns: dict[str, int] = {}
+    for idx, emp in enumerate(employees):
+        if idx < left_count:
+            col = 2 + idx  # B..G
+        else:
+            col = 9 + (idx - left_count)  # I..S
+        employee_columns[emp.id] = col
+        ws.cell(row=header_row, column=col, value=emp.name)
+
+    _apply_row_base_style(ws, header_row)
+
+    # 数据行
+    row_idx = header_row + 1
+    for schedule in schedules:
+        try:
+            mm = int(schedule.date[5:7])
+            dd = int(schedule.date[8:10])
+            date_text = f"{mm}.{dd}"
+        except Exception:
+            date_text = schedule.date
+
+        ws.cell(row=row_idx, column=1, value=date_text)
+        _apply_row_base_style(ws, row_idx)
+
+        record_map = {r.employee_id: r for r in schedule.records}
+        for emp in employees:
+            col = employee_columns.get(emp.id)
+            if col is None:
+                continue
+
+            record = record_map.get(emp.id)
+            shift_type = _normalize_shift_type(record.shift_type if record else None)
+            text = _get_display_text(shift_type, record.label if record else None)
+
+            cell = ws.cell(row=row_idx, column=col, value=text)
+            cell.fill = _get_fill_by_value(shift_type, text)
+
+        row_idx += 1
+
+    # 块后留一个空行，便于区分月份
+    return row_idx + 1
+
+
+def _prepare_sheet(ws):
+    # 列宽：模板中主表每列约 13
+    for col in range(1, 20):
+        ws.column_dimensions[get_column_letter(col)].width = 13
 
 
 def export_schedule_to_excel(
@@ -38,158 +159,53 @@ def export_schedule_to_excel(
     schedules: list[DailySchedule],
     employees: list[Employee],
 ) -> io.BytesIO:
-    """Export schedule to Excel file.
-
-    Args:
-        month: Month string (e.g., "2024-10")
-        group_id: Group identifier (A, B, or C)
-        schedules: List of daily schedules
-        employees: List of employees
-
-    Returns:
-        BytesIO buffer containing the Excel file
-    """
+    """导出单月 Excel（模板样式）"""
     wb = Workbook()
     ws = wb.active
-    ws.title = f"{month} {group_id}组排班表"
+    ws.title = f"{month}-{group_id}"[:31]
+    _prepare_sheet(ws)
 
-    # Styles
-    header_font = Font(bold=True, size=12)
-    header_fill = PatternFill(start_color="4A90D9", end_color="4A90D9", fill_type="solid")
-    header_font_white = Font(bold=True, size=12, color="FFFFFF")
-    center_align = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
+    _write_month_block(
+        ws=ws,
+        start_row=1,
+        month=month,
+        group_id=group_id,
+        schedules=schedules,
+        employees=employees,
     )
 
-    # Build employee lookup
-    emp_by_id = {e.id: e for e in employees}
-
-    # Header row
-    ws.cell(row=1, column=1, value="日期").font = header_font_white
-    ws.cell(row=1, column=1).fill = header_fill
-    ws.cell(row=1, column=1).alignment = center_align
-    ws.cell(row=1, column=1).border = thin_border
-
-    ws.cell(row=1, column=2, value="星期").font = header_font_white
-    ws.cell(row=1, column=2).fill = header_fill
-    ws.cell(row=1, column=2).alignment = center_align
-    ws.cell(row=1, column=2).border = thin_border
-
-    # Employee name headers
-    for col, emp in enumerate(employees, start=3):
-        cell = ws.cell(row=1, column=col, value=emp.name)
-        cell.font = header_font_white
-        cell.fill = header_fill
-        cell.alignment = center_align
-        cell.border = thin_border
-
-    # Data rows
-    for row_idx, schedule in enumerate(schedules, start=2):
-        # Date column
-        date_cell = ws.cell(row=row_idx, column=1, value=schedule.date)
-        date_cell.alignment = center_align
-        date_cell.border = thin_border
-
-        # Day of week column
-        dow_cell = ws.cell(row=row_idx, column=2, value=schedule.day_of_week)
-        dow_cell.alignment = center_align
-        dow_cell.border = thin_border
-
-        # Build record lookup for this day
-        record_by_emp = {r.employee_id: r for r in schedule.records}
-
-        # Employee shift cells
-        for col, emp in enumerate(employees, start=3):
-            record = record_by_emp.get(emp.id)
-            shift_type = record.shift_type if record else ShiftType.NONE
-
-            cell = ws.cell(row=row_idx, column=col, value=SHIFT_LABELS.get(shift_type, ""))
-            cell.alignment = center_align
-            cell.border = thin_border
-
-            # Apply color
-            color = SHIFT_COLORS.get(shift_type, "FFFFFF")
-            cell.fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-
-    # Adjust column widths
-    ws.column_dimensions[get_column_letter(1)].width = 12  # Date
-    ws.column_dimensions[get_column_letter(2)].width = 8   # Day of week
-    for col in range(3, len(employees) + 3):
-        ws.column_dimensions[get_column_letter(col)].width = 6
-
-    # Add summary sheet
-    _add_summary_sheet(wb, month, group_id, schedules, employees)
-
-    # Save to buffer
     buffer = io.BytesIO()
     wb.save(buffer)
     buffer.seek(0)
-
     return buffer
 
 
-def _add_summary_sheet(
-    wb: Workbook,
-    month: str,
+def export_multi_month_schedule_to_excel(
     group_id: str,
-    schedules: list[DailySchedule],
-    employees: list[Employee],
-):
-    """Add a summary statistics sheet to the workbook."""
-    ws = wb.create_sheet(title="统计")
+    month_schedules: dict[str, list[DailySchedule]],
+    month_employees: dict[str, list[Employee]],
+) -> io.BytesIO:
+    """导出多月 Excel：单个 Sheet 纵向拼接（不新建多 Sheet）。"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "排班汇总"
+    _prepare_sheet(ws)
 
-    # Styles
-    header_font = Font(bold=True, size=11)
-    header_fill = PatternFill(start_color="E0E0E0", end_color="E0E0E0", fill_type="solid")
-    center_align = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style="thin"),
-        right=Side(style="thin"),
-        top=Side(style="thin"),
-        bottom=Side(style="thin"),
-    )
+    current_row = 1
+    for month in sorted(month_schedules.keys()):
+        current_row = _write_month_block(
+            ws=ws,
+            start_row=current_row,
+            month=month,
+            group_id=group_id,
+            schedules=month_schedules.get(month, []),
+            employees=month_employees.get(month, []),
+        )
 
-    emp_by_id = {e.id: e for e in employees}
+    if not month_schedules:
+        ws.cell(row=1, column=1, value="无可导出数据")
 
-    # Calculate statistics
-    shift_counts = {emp.id: {st: 0 for st in ShiftType} for emp in employees}
-
-    for schedule in schedules:
-        for record in schedule.records:
-            if record.employee_id in shift_counts:
-                shift_counts[record.employee_id][record.shift_type] += 1
-
-    # Headers
-    headers = ["姓名", "白班", "睡觉班", "小夜班", "大夜班", "休假", "总计"]
-    for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = center_align
-        cell.border = thin_border
-
-    # Data rows
-    for row_idx, emp in enumerate(employees, start=2):
-        counts = shift_counts[emp.id]
-
-        ws.cell(row=row_idx, column=1, value=emp.name).border = thin_border
-        ws.cell(row=row_idx, column=2, value=counts[ShiftType.DAY]).border = thin_border
-        ws.cell(row=row_idx, column=3, value=counts[ShiftType.SLEEP]).border = thin_border
-        ws.cell(row=row_idx, column=4, value=counts[ShiftType.MINI_NIGHT]).border = thin_border
-        ws.cell(row=row_idx, column=5, value=counts[ShiftType.LATE_NIGHT]).border = thin_border
-        ws.cell(row=row_idx, column=6, value=counts[ShiftType.VACATION]).border = thin_border
-
-        total = sum(counts.values()) - counts[ShiftType.NONE]
-        ws.cell(row=row_idx, column=7, value=total).border = thin_border
-
-        for col in range(1, 8):
-            ws.cell(row=row_idx, column=col).alignment = center_align
-
-    # Adjust column widths
-    ws.column_dimensions["A"].width = 10
-    for col in range(2, 8):
-        ws.column_dimensions[get_column_letter(col)].width = 10
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer

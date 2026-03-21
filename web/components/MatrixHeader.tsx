@@ -8,8 +8,9 @@ interface MatrixHeaderProps {
   onMonthChange: (val: string) => void;
   onAutoSchedule: () => void;
   onClearMonthSchedule?: () => void;
+  onClearUnlockedMonthSchedule?: () => void;
   onSaveSchedule?: () => void;
-  onExportSchedule?: () => void;
+  onExportSchedule?: (months: string[]) => void;
   onAddEmployee?: () => void;
   employeeCount?: number;
   isLoading?: boolean;
@@ -19,11 +20,14 @@ interface MatrixHeaderProps {
 
 const MatrixHeader: React.FC<MatrixHeaderProps> = ({
   activeGroup, onGroupChange, selectedMonth, onMonthChange, onAutoSchedule,
-  onClearMonthSchedule, onSaveSchedule, onExportSchedule, onAddEmployee, employeeCount = 0,
+  onClearMonthSchedule, onClearUnlockedMonthSchedule, onSaveSchedule, onExportSchedule, onAddEmployee, employeeCount = 0,
   isLoading, isSaving, isBackendAvailable
 }) => {
   const [showPicker, setShowPicker] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const [showExportMonthPicker, setShowExportMonthPicker] = useState(false);
+  const [exportMonths, setExportMonths] = useState<string[]>([selectedMonth]);
+  const exportPickerRef = useRef<HTMLDivElement>(null);
 
   const [currentYear, currentMonth] = selectedMonth.split('-').map(Number);
 
@@ -33,10 +37,17 @@ const MatrixHeader: React.FC<MatrixHeaderProps> = ({
       if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) {
         setShowPicker(false);
       }
+      if (exportPickerRef.current && !exportPickerRef.current.contains(event.target as Node)) {
+        setShowExportMonthPicker(false);
+      }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  useEffect(() => {
+    setExportMonths(prev => prev.length ? prev : [selectedMonth]);
+  }, [selectedMonth]);
 
   const handleYearChange = (delta: number) => {
     const newYear = currentYear + delta;
@@ -47,6 +58,15 @@ const MatrixHeader: React.FC<MatrixHeaderProps> = ({
     onMonthChange(`${currentYear}-${m.toString().padStart(2, '0')}`);
     setShowPicker(false);
   };
+
+  const toggleExportMonth = (month: string) => {
+    setExportMonths(prev => prev.includes(month) ? prev.filter(m => m !== month) : [...prev, month]);
+  };
+
+  const exportYearMonths = Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1;
+    return `${currentYear}-${m.toString().padStart(2, '0')}`;
+  });
 
   return (
     <header className="h-14 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 shrink-0 z-[100]">
@@ -157,15 +177,72 @@ const MatrixHeader: React.FC<MatrixHeaderProps> = ({
           </button>
 
           <button
-            onClick={onExportSchedule}
+            onClick={onClearUnlockedMonthSchedule}
             disabled={isLoading || !isBackendAvailable}
-            className={`border border-emerald-600 text-emerald-600 hover:bg-emerald-600 hover:text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all active:scale-95 group ${
+            className={`border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all active:scale-95 ${
               (isLoading || !isBackendAvailable) ? 'opacity-50 cursor-not-allowed' : ''
             }`}
           >
-            <span className="material-icons text-sm">description</span>
-            导出Excel
+            <span className="material-icons text-sm">auto_delete</span>
+            清空当月未锁定排班
           </button>
+
+          <div className="relative" ref={exportPickerRef}>
+            <button
+              onClick={() => setShowExportMonthPicker(v => !v)}
+              disabled={isLoading || !isBackendAvailable}
+              className={`border border-emerald-600 text-emerald-600 hover:bg-emerald-600 hover:text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 transition-all active:scale-95 group ${
+                (isLoading || !isBackendAvailable) ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+            >
+              <span className="material-icons text-sm">description</span>
+              导出Excel
+            </button>
+
+            {showExportMonthPicker && (
+              <div className="absolute right-0 mt-2 w-72 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-4 z-[120]">
+                <div className="text-sm font-bold mb-3 text-slate-700 dark:text-slate-200">选择导出月份（可多选）</div>
+                <div className="grid grid-cols-3 gap-2 mb-3">
+                  {exportYearMonths.map((m) => {
+                    const selected = exportMonths.includes(m);
+                    return (
+                      <button
+                        key={m}
+                        onClick={() => toggleExportMonth(m)}
+                        className={`py-1.5 text-[12px] font-bold rounded-lg transition-all ${
+                          selected
+                            ? 'bg-emerald-600 text-white'
+                            : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'
+                        }`}
+                      >
+                        {m.split('-')[1]}月
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <button
+                    onClick={() => setExportMonths([selectedMonth])}
+                    className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600"
+                  >
+                    仅当前月
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (!onExportSchedule) return;
+                      const finalMonths = exportMonths.length ? exportMonths : [selectedMonth];
+                      onExportSchedule(finalMonths.sort());
+                      setShowExportMonthPicker(false);
+                    }}
+                    className="text-xs px-3 py-1 rounded bg-emerald-600 text-white font-bold"
+                  >
+                    确认导出
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           <button
             onClick={onSaveSchedule}

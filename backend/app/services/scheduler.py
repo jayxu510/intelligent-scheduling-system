@@ -317,6 +317,20 @@ class SchedulingSolver:
                     # 睡觉班
                     model.Add(x[first_emp_id, day, ShiftType.SLEEP] == 1)
 
+        # =======================================================
+        # Constraint 7.62: 前两名员工（值班经理）白班互斥（硬约束）
+        # 第一和第二个人绝对不能在同一天上白班
+        # =======================================================
+        if len(self.emp_ids) >= 2:
+            manager_1_id = self.emp_ids[0]
+            manager_2_id = self.emp_ids[1]
+            for day in self.work_days:
+                # 两人在同一天的白班状态相加必须 <= 1 (即不可能同时为1)
+                model.Add(
+                    x[manager_1_id, day, ShiftType.DAY] + 
+                    x[manager_2_id, day, ShiftType.DAY] <= 1
+                )
+
         # Constraint 7.65: 锁定的单元格约束（硬约束）
         # 用户锁定的单元格必须保持其班次类型不变
         for (emp_id, day), shift_type in self.locked_assignments.items():
